@@ -1,0 +1,20 @@
+{
+  "name": "llm-judge",
+  "version": "1.0.0",
+  "description": "CLI tool for evaluating artifacts with LLMs — Swiss Elo ranking, pass/gate, and qualitative review",
+  "main": "src/cli.js",
+  "bin": {
+    "llm-judge": "src/cli.js"
+  },
+  "scripts": {
+    "test": "node src/cli.js review --prompt 'Which essay is more informative?' test/fixtures/essay_a.md test/fixtures/essay_b.md",
+    "test:elo": "node src/cli.js elo --prompt 'Which is more clearly written?' test/fixtures/essay_a.md test/fixtures/essay_b.md",
+    "test:gate": "node src/cli.js gate --prompt 'Does this essay meet the quality bar?' test/fixtures/essay_a.md"
+  },
+  "keywords": ["llm", "judge", "evaluation", "elo", "ranking", "claude"],
+  "author": "Evolved Software",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  }
+}
