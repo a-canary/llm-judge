@@ -12,7 +12,11 @@
     "test:gate": "node src/cli.js gate --prompt 'Does this essay meet the quality bar?' test/fixtures/essay_a.md"
   },
   "keywords": ["llm", "judge", "evaluation", "elo", "ranking", "claude"],
-  "author": "Evolved Software",
+  "author": "a-canary",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/a-canary/llm-judge"
+  },
   "license": "MIT",
   "engines": {
     "node": ">=18"
