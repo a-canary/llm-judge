@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-llm-judge: Orchestrate Claude Code judge agents to evaluate artifacts.
+llm-judge: Orchestrate LLM judge agents to evaluate artifacts.
 Supports: elo, gate, review modes with Swiss Elo tournament.
 
 Usage:
@@ -10,12 +10,80 @@ Usage:
 import argparse
 import hashlib
 import json
-import subprocess
 import os
 import re
 import shutil
+import subprocess
 from pathlib import Path
 from typing import Optional
+
+# --------------------------------------------------------------------------_
+# Credential lookup — cross-platform, pipeline-friendly
+# --------------------------------------------------------------------------_
+
+def _provider_base_url(provider: str) -> str:
+    """Return API base URL for a provider name.
+
+    Priority:
+    1. LLM_JUDGE_API_BASE env var (pipeline-friendly, always wins)
+    2. Provider-specific default
+    """
+    if provider == "cli":
+        return "cli"
+    env_base = os.environ.get("LLM_JUDGE_API_BASE", "").strip()
+    if env_base:
+        return env_base
+    if provider == "minimax":
+        return "https://api.minimax.io/v1"
+    if provider == "openai":
+        return "https://api.openai.com/v1"
+    return provider  # raw URL
+
+
+def _get_credentials(provider: str) -> tuple[str, str]:
+    """Look up (base_url, api_key) for a provider.
+
+    Priority per credential:
+    1. LLM_JUDGE_API_KEY env var  (pipeline-friendly, always wins)
+    2. keyring: service="llm-judge", key="<provider>://api_key"
+    3. pass: 'pass show <provider>/api-key'  (Unix-only, last resort)
+
+    base_url additionally falls back to LLM_JUDGE_API_BASE env var.
+    """
+    base_url = _provider_base_url(provider)
+
+    # --- API key: env var first ---
+    api_key = os.environ.get("LLM_JUDGE_API_KEY", "").strip()
+    if api_key:
+        return base_url, api_key
+
+    # --- keyring: cross-platform system keychain ---
+    try:
+        import keyring
+        stored = keyring.get_password("llm-judge", f"{provider}://api_key")
+        if stored:
+            return base_url, stored
+    except Exception:
+        pass
+
+    # --- pass: Unix-only last resort ---
+    if provider in ("minimax", "openai"):
+        for pass_path in (f"{provider}/api-key", provider):
+            try:
+                key = subprocess.check_output(["pass", "show", pass_path], text=True).strip()
+                if key:
+                    return base_url, key
+            except Exception:
+                pass
+
+    # --- env-var fallbacks for common providers ---
+    if provider == "minimax":
+        return base_url, os.environ.get("MINIMAX_API_KEY", "")
+    if provider == "openai":
+        return base_url, os.environ.get("OPENAI_API_KEY", "")
+
+    return base_url, ""
+
 
 # ---------------------------------------------------------------------------
 # Default generic criteria
@@ -55,6 +123,7 @@ def validate_criteria(criteria: dict) -> None:
 def load_artifact(raw: str) -> dict:
     if raw.startswith("inline:"):
         content = raw[7:]
+        aid = f"artifact_{hashlib.sha256(content.encode()).hexdigest()[:8]}"
     elif raw.startswith("http://") or raw.startswith("https://"):
         try:
             import urllib.request
@@ -63,8 +132,6 @@ def load_artifact(raw: str) -> dict:
                 content = resp.read().decode("utf-8", errors="replace")
             parsed = urlparse(raw)
             aid = Path(parsed.path).name or parsed.netloc
-            return {"id": aid, "content": content,
-                    "content_hash": hashlib.sha256(content.encode()).hexdigest()[:16]}
         except Exception as e:
             content = f"[Could not fetch {raw}: {e}]"
             aid = raw
@@ -75,7 +142,7 @@ def load_artifact(raw: str) -> dict:
             aid = path.name
         else:
             content = raw
-            aid = f"artifact_{id(raw)}"
+            aid = f"artifact_{hashlib.sha256(raw.encode()).hexdigest()[:8]}"
 
     return {
         "id": aid,
@@ -88,14 +155,14 @@ def load_artifacts(raws: list[str]) -> list[dict]:
     return [load_artifact(r) for r in raws]
 
 # ---------------------------------------------------------------------------
-# Claude Code invocation
+# LLM invocation
 # ---------------------------------------------------------------------------
 
 def call_claude(prompt: str, model: str = "claude-sonnet-4-6",
                 effort: str = "high", system: str = DEFAULT_SYSTEM,
                 provider: str = "cli") -> str:
     """
-    provider "cli"   → use `claude` CLI (local). model is the CLI model name.
+    provider "cli"    → use `claude` CLI (local). model is the CLI model name.
     provider "minimax" → use minimax API (OpenAI-compatible). model is the API model name.
     provider "<URL>"  → use arbitrary OpenAI-compatible API base URL.
     """
@@ -115,15 +182,21 @@ def call_claude(prompt: str, model: str = "claude-sonnet-4-6",
             raise RuntimeError(f"claude exited {proc.returncode}: {proc.stderr}")
         return proc.stdout.strip()
 
-    # API mode: OpenAI-compatible
-    import urllib.request
-    base_url = _provider_base_url(provider)
-    api_key = _provider_api_key(provider)
+    # API mode: OpenAI-compatible — unified credential lookup
+    base_url, api_key = _get_credentials(provider)
+    if not api_key:
+        raise RuntimeError(
+            f"No API key found for provider '{provider}'. "
+            "Set LLM_JUDGE_API_KEY env var, or use keyring "
+            "(python -m keyring set llm-judge <provider>://api_key <key>)."
+        )
     payload = {
         "model": model,
         "messages": [{"role": "user", "content": prompt}],
         "max_tokens": 4096,
+        "temperature": 0,
     }
+    import urllib.request
     req = urllib.request.Request(
         f"{base_url}/chat/completions",
         data=json.dumps(payload).encode(),
@@ -136,29 +209,6 @@ def call_claude(prompt: str, model: str = "claude-sonnet-4-6",
     with urllib.request.urlopen(req, timeout=120) as resp:
         data = json.loads(resp.read())
     return data["choices"][0]["message"]["content"].strip()
-
-
-def _provider_base_url(provider: str) -> str:
-    if provider == "minimax":
-        return "https://api.minimax.io/v1"
-    if provider == "openai":
-        return "https://api.openai.com/v1"
-    return provider  # raw URL
-
-
-def _provider_api_key(provider: str) -> str:
-    """Look up API key from environment or pass store."""
-    if provider == "minimax":
-        # Key is stored in pass under minimax/api-key
-        try:
-            import subprocess
-            return subprocess.check_output(
-                ["pass", "show", "minimax/api-key"], text=True
-            ).strip()
-        except Exception:
-            pass
-        # Also check MINIMAX_API_KEY env var
-        return os.environ.get("MINIMAX_API_KEY", os.environ.get("OPENAI_API_KEY", ""))
 
 # ---------------------------------------------------------------------------
 # Prompt builders
@@ -176,7 +226,7 @@ def build_pairwise_prompt(a: dict, b: dict, dimensions: list[dict], task: str) -
     return f"""You are an expert judge. Two artifacts are evaluated for this task:
 "{task}"
 
-Rate each artifact 1–5 on these dimensions, compute weighted scores, and pick the winner.
+Rate each artifact 1-5 on these dimensions, compute weighted scores, and pick the winner.
 
 Dimensions:
 {dims}
@@ -204,138 +254,110 @@ def build_critique_prompt(artifact: dict, dimensions: list[dict], task: str) -> 
             "1": "Poor — do not use",
         }.items()
     )
-    return f"""Critique this artifact. Score each dimension 1–5, compute weighted average, give actionable feedback.
+    return f"""Critique this artifact. Score each dimension 1-5, compute weighted average, give actionable feedback.
 
 Task: {task}
 
 Dimensions:
 {dims}
 
-Quality bar:
-{bar}
-
-Artifact content:
+---
+ARTIFACT:
 {artifact['content']}
+---
 
-Respond in Markdown with:
-## Dimension Scores
-| Dimension | Score |
-|-----------|-------|
-...
-
-## Overall: X.XX / 5.0
-## Verdict: [Acceptable / Needs revision / Poor]
-## Specific Feedback
-- What to fix
-- What to keep"""
+Score each dimension and respond ONLY with this JSON (no extra text):
+{{"scores": {{"<dim>": N, ...}}, "average": N.N, "verdict": "...", "feedback": "..."}}"""
 
 
 def build_gate_prompt(artifact: dict, dimensions: list[dict], task: str) -> str:
     dims = build_dimensions_text(dimensions)
-    return f"""Evaluate this artifact against pass/fail gates.
+    return f"""Does this artifact meet the bar for this task?
+"{task}"
 
-Task: {task}
+Score 1-5 on each dimension, compute weighted average. Respond ONLY with this JSON (no extra text):
+{{"score": N.N, "passed": true|false, "verdict": "..."}}
 
-Required dimensions:
+Dimensions:
 {dims}
 
-Artifact content:
+---
+ARTIFACT:
 {artifact['content']}
-
-Respond with JSON:
-{{"scores": {{"DimensionName": N, ...}}, "weighted": X.XX, "passed": true/false, "verdict": "one sentence"}}"""
-
+---"""
 
 # ---------------------------------------------------------------------------
 # Result parsers
-def _strip_code_fence(text: str) -> str:
-    """Strip leading/trailing ```json ... ``` or ``` ... ``` fences."""
-    text = text.strip()
-    # Handle ```json ... ``` (with optional language tag)
-    for fence in ("```json", "```JSON", "```json\n", "```JSON\n"):
-        if text.startswith(fence):
-            end = text.rfind("```")
-            if end != -1:
-                return text[len(fence):end].strip()
-    # Handle bare ``` ... ```
-    if text.startswith("```"):
-        lines = text.splitlines()
-        # Find last line that is exactly ```
-        last_fence = len(lines) - 1 - next((i for i in range(len(lines)-1, -1, -1) if lines[i].strip() == "```"), -1)
-        if last_fence > 0:
-            return "\n".join(lines[1:last_fence]).strip()
-    return text
-
+# ---------------------------------------------------------------------------
 
 def parse_pairwise_result(raw: str) -> dict:
-    # Strip MiniMax thinking blocks before JSON parsing
-    # MiniMax emits:  Think: ...  or  <> blocks
-    text = re.sub(r"<[^>]*>[^<]*</[^>]*>", "", raw, flags=re.IGNORECASE | re.DOTALL)
-    cleaned = _strip_code_fence(text)
-    cleaned = cleaned.strip()
-    cleaned = re.sub(r"<think>.*?</think>", "", cleaned, flags=re.DOTALL)
-    cleaned = cleaned.strip()
     try:
-        return json.loads(cleaned)
-    except json.JSONDecodeError:
-        # Fallback: extract winner from markdown critique text
-        # Pattern: "Winner: A" or "## Winner: A" or "**Winner: A**"
-        winner_match = re.search(r"(?:^|\n)##?\s*Winner:\s*([AB])", cleaned, re.M)
-        score_a, score_b = 3.0, 3.0
-        winner = "A"
-        if winner_match:
-            winner = winner_match.group(1)
-        # Try to extract confidence/quality scores
-        conf_a = re.search(r"A.*?(\d+(?:\.\d+)?)\s*(?:/|out of|/)", cleaned[:500], re.I)
-        conf_b = re.search(r"B.*?(\d+(?:\.\d+)?)\s*(?:/|out of|/)", cleaned[:500], re.I)
-        if conf_a:
-            score_a = min(5.0, max(1.0, float(conf_a.group(1))))
-        if conf_b:
-            score_b = min(5.0, max(1.0, float(conf_b.group(1))))
+        # Try JSON first
+        data = json.loads(raw)
         return {
-            "a_score": score_a,
-            "b_score": score_b,
-            "winner": winner,
-            "reason": cleaned[:200],
+            "a_score": float(data["a_score"]),
+            "b_score": float(data["b_score"]),
+            "winner": data["winner"].upper(),
+            "reason": data.get("reason", ""),
         }
-    raise ValueError(f"Could not parse pairwise result: {cleaned[:300]}")
+    except Exception:
+        pass
+    # Fallback: regex
+    winner = None
+    for w in ("A", "B"):
+        if re.search(rf'\bWinner:\s*{w}\b', raw, re.IGNORECASE):
+            winner = w
+            break
+    scores = [float(s) for s in re.findall(r'Score[_ ]?[AB]?:\s*(\d+\.?\d*)', raw, re.IGNORECASE)]
+    a_score = scores[0] if len(scores) > 0 else 5.0
+    b_score = scores[1] if len(scores) > 1 else 5.0
+    winner = winner or ("A" if a_score > b_score else "B" if b_score > a_score else "A")
+    return {"a_score": a_score, "b_score": b_score, "winner": winner, "reason": raw[:200]}
+
 
 def parse_gate_result(raw: str) -> dict:
     try:
-        data = json.loads(_strip_code_fence(raw))
-        weighted = float(data.get("weighted", 0.0))
-        # Clamp weighted to valid range (model may compute wrong)
-        weighted = max(1.0, min(5.0, weighted))
+        data = json.loads(raw)
         return {
-            "scores": data.get("scores", {}),
-            "score": weighted,
-            "passed": data.get("passed", False),
+            "score": float(data["score"]),
+            "passed": bool(data.get("passed", float(data["score"]) >= 3.5)),
             "verdict": data.get("verdict", ""),
         }
     except Exception:
-        return {"scores": {}, "score": 0.0, "passed": False, "verdict": f"[parse error] {raw[:100]}"}
-
+        score_match = re.search(r'Score:\s*(\d+\.?\d*)', raw, re.IGNORECASE)
+        score = float(score_match.group(1)) if score_match else 3.0
+        passed = "pass" in raw.lower() or score >= 3.5
+        verdict = raw[:200]
+        return {"score": score, "passed": passed, "verdict": verdict}
 
 # ---------------------------------------------------------------------------
-# Mode: review (critique)
+# Mode: review
 # ---------------------------------------------------------------------------
 
 def mode_review(artifacts: list[dict], criteria: dict, task: str,
                 output: Optional[str], model: str, effort: str, provider: str) -> str:
     dims = criteria["dimensions"]
-    lines = [f"# Review — {len(artifacts)} artifact(s)\n", f"**Task:** {task}\n"]
-
+    lines = [f"# Review — {len(artifacts)} artifacts\n", f"**Task:** {task}\n"]
     for a in artifacts:
         prompt = build_critique_prompt(a, dims, task)
-        result = call_claude(prompt, model=model, effort=effort, provider=provider)
-        lines.append(f"\n## {a['id']}\n{result}")
-
+        raw = call_claude(prompt, model=model, effort=effort, provider=provider)
+        try:
+            data = json.loads(raw)
+            scores = data.get("scores", {})
+            feedback = data.get("feedback", "")
+            avg = data.get("average", 0)
+            lines.append(f"\n## {a['id']} — {avg:.2f}/5")
+            for d in dims:
+                s = scores.get(d["name"], "?")
+                lines.append(f"- **{d['name']}**: {s}/5")
+            lines.append(f"\n{feedback}\n")
+        except Exception:
+            lines.append(f"\n## {a['id']}\n\n{raw[:500]}\n")
     text = "\n".join(lines)
     if output:
         Path(output).write_text(text)
     print(text)
     return text
-
 
 # ---------------------------------------------------------------------------
 # Mode: gate (pass/fail)
@@ -349,86 +371,70 @@ def mode_gate(artifacts: list[dict], criteria: dict, task: str,
         prompt = build_gate_prompt(a, dims, task)
         raw = call_claude(prompt, model=model, effort=effort, provider=provider)
         results.append({"id": a["id"], **parse_gate_result(raw)})
-
     all_passed = all(r["passed"] for r in results)
     lines = [f"# Gate Results\n", f"**Task:** {task}\n"]
     for r in results:
         icon = "✅" if r["passed"] else "❌"
         lines.append(f"{icon} **{r['id']}** — {r['score']:.2f}/5 — {r['verdict']}")
     lines.append(f"\n**Overall: {'PASS ✅' if all_passed else 'FAIL ❌'}**")
-
     text = "\n".join(lines)
     if output:
         Path(output).write_text(text)
     print(text)
     return text
 
-
 # ---------------------------------------------------------------------------
-# Mode: elo (Swiss ranking)
+# Mode: elo
 # ---------------------------------------------------------------------------
 
-def mode_elo(
-    artifacts: list[dict],
-    criteria: dict,
-    task: str,
-    elo_mode: str,
-    elo_K: int,
-    n_rounds: int,
-    output: Optional[str],
-    model: str,
-    effort: str,
-    provider: str,
-) -> str:
-    # references/ is a sibling to scripts/ — add parent dir to path
+def mode_elo(artifacts: list[dict], criteria: dict, task: str,
+             output: Optional[str], model: str, effort: str, provider: str,
+             elo_mode: str, elo_K: int, n_rounds: int) -> str:
+
     import sys
     sys.path.insert(0, str(Path(__file__).parent.parent / "references"))
     from elo import FIFOCache, rank_swiss_elo
 
     n = len(artifacts)
     dims_text = build_dimensions_text(criteria["dimensions"])
-    dims_hash = hashlib.sha256(dims_text.encode()).hexdigest()[:8]
+    dims_hash = hashlib.sha256(dims_text.encode()).hexdigest()[:12]
     cache = FIFOCache()
 
-    artifact_map: dict[str, dict] = {a["id"]: a for a in artifacts}
-
-    def compare_fn(task: str, dims_hash: str,
-                   a_elo, b_elo, cache: FIFOCache) -> dict:
-        a = artifact_map[a_elo.id]
-        b = artifact_map[b_elo.id]
-
-        cached = cache.get(task, dims_hash, a_elo.id, a_elo.content_hash,
-                           b_elo.id, b_elo.content_hash)
+    def compare_fn(a_id: str, a_elo: float, a_content: str,
+                   b_id: str, b_elo: float, b_content: str) -> dict:
+        a_hash = hashlib.sha256(a_content.encode()).hexdigest()[:8]
+        b_hash = hashlib.sha256(b_content.encode()).hexdigest()[:8]
+        cached = cache.get(task, dims_hash, a_id, a_hash, b_id, b_hash)
         if cached:
             return cached
-
-        prompt = build_pairwise_prompt(a, b, criteria["dimensions"], task)
+        prompt = build_pairwise_prompt(
+            {"id": a_id, "content": a_content},
+            {"id": b_id, "content": b_content},
+            criteria["dimensions"], task
+        )
         raw = call_claude(prompt, model=model, effort=effort, provider=provider)
         result = parse_pairwise_result(raw)
-
-        normalized = {
-            "a_score": max(1.0, min(5.0, float(result.get("a_score", 3.0)))),
-            "b_score": max(1.0, min(5.0, float(result.get("b_score", 3.0)))),
-            "winner": result.get("winner", "A") if result.get("winner") in ("A", "B") else "A",
-            "reason": result.get("reason", ""),
-        }
-        cache.set(task, dims_hash, a_elo.id, a_elo.content_hash,
-                  b_elo.id, b_elo.content_hash, normalized)
+        winner_key = result["winner"]
+        normalized = {"a_wins": 1.0 if winner_key == "A" else 0.0,
+                      "b_wins": 1.0 if winner_key == "B" else 0.0,
+                      "draw": 1.0 if winner_key not in ("A", "B") else 0.0,
+                      "a_score": result["a_score"],
+                      "b_score": result["b_score"],
+                      "reason": result["reason"]}
+        cache.set(task, dims_hash, a_id, a_hash, b_id, b_hash, normalized)
         return normalized
 
     result = rank_swiss_elo(
         artifacts=artifacts,
         task=task,
         dims_hash=dims_hash,
-        cache=cache,
         compare_fn=compare_fn,
+        cache=cache,
         n_rounds=n_rounds,
         elo_mode=elo_mode,
         elo_K=elo_K,
     )
-
-    ranked_ids = result["ranked"]
-    elo_map = result["artifacts"]
+    ranked_ids = result["ranked_ids"]
     rounds_log = result["rounds_log"]
     cache_stats = cache.stats()
 
@@ -444,31 +450,20 @@ def mode_elo(
         f"**Task:** {task}\n",
         f"**Provider:** {provider} / {model} ({effort} effort)\n",
         f"**Rounds:** {n_rounds}\n",
-        f"**Cache:** {cache_stats['cached']} entries stored\n",
+        f"**Cache:** {cache_stats['cached']} hits\n",
+        "\n## Final Ranking\n",
+        "| Rank | Artifact       | Elo    | Matches |",
+        "|------|----------------|--------|---------|",
     ]
+    for rank, ae in enumerate(result["ranked"], 1):
+        lines.append(f"| {rank}    | {ae.id:<15} | {ae.elo:6.1f} | {len(ae.matches):7} |")
 
-    # Final ranking table
-    lines.append(f"\n## Final Ranking\n")
-    lines.append("| Rank | Artifact | Elo | Matches |")
-    lines.append("|------|----------|-----|---------|")
-    for i, aid in enumerate(ranked_ids):
-        e = elo_map[aid]
-        lines.append(f"| {i+1} | {aid} | {e['elo']} | {e['n']} |")
-
-    # Rounds log
-    lines.append(f"\n## Rounds\n")
-    for rec in rounds_log:
-        rnd = rec["round"]
-        lines.append(f"\n**Round {rnd}**")
-        if rec["byes"]:
-            lines.append(f"  Byes: {', '.join(rec['byes'])}")
-        for p in rec["pairs"]:
-            w = p["winner"]
-            w_label = p["a"] if w == "A" else p["b"]
-            lines.append(
-                f"  {p['a']} ({p['a_elo_after']}) vs {p['b']} ({p['b_elo_after']}) "
-                f"→ **{w_label}** · {p['reason'][:70]}"
-            )
+    if rounds_log:
+        lines.append("\n## Rounds Log")
+        for rlog in rounds_log:
+            lines.append(f"\n### Round {rlog['round']} — {len(rlog['matches'])} matches")
+            for m in rlog["matches"]:
+                lines.append(f"- ({m['a_id']} {m['a_elo']:.0f}) vs ({m['b_id']} {m['b_elo']:.0f}) → {m['winner']} | {m['reason'][:80]}")
 
     text = "\n".join(lines)
     if output:
@@ -476,47 +471,17 @@ def mode_elo(
     print(text)
     return text
 
-
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
-def parse_rank_range(s: str) -> tuple[Optional[int], Optional[int]]:
-    """
-    Parse rank spec:
-      None       → no limit (return all)
-      "3"        → top 3
-      "1..3"     → ranks 1 through 3
-    Returns (rank_lo, rank_hi) 1-indexed inclusive, or (None, None).
-    """
-    if s is None:
-        return (None, None)
-    if ".." in s:
-        parts = s.split("..")
-        lo, hi = int(parts[0]), int(parts[1])
-        return (lo, hi)
-    if "-" in s:
-        parts = s.split("-")
-        lo, hi = int(parts[0]), int(parts[1])
-        return (lo, hi)
-    v = int(s)
-    return (v, v)
-
-
-def main() -> None:
+def main():
     parser = argparse.ArgumentParser(
-        description="Opus Judge — Swiss Elo artifact evaluation via Claude Code",
+        description="llm-judge: evaluate artifacts with an LLM judge",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-NOTE: Artifacts must come BEFORE --prompt. argparse quirk.
-
-Modes:
-  review  Detailed qualitative critique (Markdown, one Opus call per artifact)
-  gate    Pass/fail assessment per artifact (one Opus call per artifact)
-  elo     Swiss Elo tournament — rank top-K or full ranking (3 rounds, pairwise)
-
 Examples:
-  llm-judge review ./memo.md ./notes.md --prompt "Which is clearer?"
+  llm-judge review ./memo.md ./notes.md --prompt "Clear technical writing?"
   llm-judge gate ./proposal.md --prompt "Does this pass safety gates?"
   llm-judge elo ./a.go ./b.go ./c.go ./d.go --prompt "Most idiomatic Go?"
   llm-judge elo --elo-rank 3 ./*.md --prompt "Find the top 3 essays"
@@ -525,86 +490,59 @@ Examples:
     )
     parser.add_argument("mode", choices=["review", "gate", "elo"])
     parser.add_argument("artifacts", nargs="*", help="File paths, URLs, or inline:TEXT (put before --prompt)")
-    parser.add_argument("--prompt", "-t", required=True,
-        help="Task — what 'good' means. REQUIRED. Must come AFTER artifacts.")
-    parser.add_argument("--model", default="claude-sonnet-4-6",
-        help="Model name. For CLI provider, use CLI model name (e.g. claude-sonnet-4-6). "
-             "For API providers (minimax/openai), use the provider's model ID.")
-    parser.add_argument("--effort", default="high")
+    parser.add_argument("--prompt", help="Task framing what good means (required)")
+    parser.add_argument("--model", default="claude-sonnet-4-6", help="Model name [default: claude-sonnet-4-6]")
     parser.add_argument("--provider", default="cli",
-        help="Provider: 'cli' (claude CLI, default), 'minimax' (API), or full URL for OpenAI-compatible API. "
-             "Because Elo comparisons are anchored pairwise judgments, weaker models can discriminate accurately.")
-    parser.add_argument("--criteria", type=Path,
-        help="Path to criteria JSON file")
-    parser.add_argument("--criteria-text",
-        help="Inline criteria as JSON string")
-    parser.add_argument("--rank", help="[DEPRECATED] Use --elo-rank or --elo-class instead")
-    parser.add_argument("--elo-rank",
-        help="Elo mode: sort-and-return top K (knockout threshold). 'all' for full ranking. E.g. --elo-rank 5 returns top 6 (even K rounds up).")
-    parser.add_argument("--elo-class",
-        help="Elo mode: roughly-sorted class K band. Band = ranks max(1,K-2) .. min(N, K+2). E.g. --elo-class 5 returns ranks 3-7.")
-    parser.add_argument("--rounds", type=int, default=3,
-        help="Number of Swiss rounds (elo mode). Default: 3")
-    parser.add_argument("--output", "-o", type=Path)
-
+                        help="Provider: cli, minimax, openai, or URL [default: cli]")
+    parser.add_argument("--effort", default="high",
+                        help="Claude effort: low, medium, high [default: high]")
+    parser.add_argument("--criteria", type=Path, help="Path to criteria JSON file")
+    parser.add_argument("--criteria-text", help="Inline criteria as JSON string")
+    parser.add_argument("--elo-rank", type=int,
+                        help="Elo mode: sorted top-K. R3 competes ranks 1..K+2. Best for EA top-K selection.")
+    parser.add_argument("--elo-class", type=int,
+                        help="Elo mode: pivot top-K. R3 competes ranks K-2..K+2, returns top K unsorted. Best for EA survivor selection without full sort.")
+    parser.add_argument("--rounds", type=int, default=3, help="Elo rounds [default: 3]")
+    parser.add_argument("--output", help="Write output to file [default: stdout]")
     args = parser.parse_args()
 
-    # Load criteria
-    if args.criteria:
-        criteria = json.loads(args.criteria.read_text())
-    elif args.criteria_text:
+    if not args.artifacts:
+        parser.print_help()
+        return
+
+    # Resolve criteria
+    if args.criteria_text:
         criteria = json.loads(args.criteria_text)
+    elif args.criteria:
+        criteria = json.loads(args.criteria.read_text())
     else:
         criteria = DEFAULT_CRITERIA
     validate_criteria(criteria)
 
+    # Determine task
+    task = args.prompt or "Which artifact is better? Rate overall quality."
+
+    # Determine Elo narrowing
+    elo_mode = "all"
+    elo_K = 0
+    if args.elo_rank is not None:
+        elo_mode = "rank"
+        elo_K = args.elo_rank
+    elif args.elo_class is not None:
+        elo_mode = "class"
+        elo_K = args.elo_class
+
     # Load artifacts
-    if not args.artifacts:
-        parser.error("At least one artifact required")
     artifacts = load_artifacts(args.artifacts)
-    n = len(artifacts)
 
-    output = str(args.output) if args.output else None
-
+    # Dispatch
     if args.mode == "review":
-        mode_review(artifacts, criteria, args.prompt, output, args.model, args.effort, args.provider)
-
+        mode_review(artifacts, criteria, task, args.output, args.model, args.effort, args.provider)
     elif args.mode == "gate":
-        mode_gate(artifacts, criteria, args.prompt, output, args.model, args.effort, args.provider)
-
+        mode_gate(artifacts, criteria, task, args.output, args.model, args.effort, args.provider)
     elif args.mode == "elo":
-        elo_mode = "all"
-        elo_K = 0
-        if args.elo_rank is not None:
-            if args.elo_rank.lower() == "all":
-                elo_mode = "all"
-                elo_K = 0
-            else:
-                elo_mode = "rank"
-                elo_K = int(args.elo_rank)
-        elif args.elo_class is not None:
-            elo_mode = "class"
-            elo_K = int(args.elo_class)
-        elif args.rank:
-            # DEPRECATED fallback
-            rank_lo, rank_hi = parse_rank_range(args.rank)
-            if rank_lo == rank_hi:
-                elo_mode = "rank"
-                elo_K = rank_lo
-            else:
-                elo_mode = "class"
-                elo_K = rank_hi
-
-        mode_elo(
-            artifacts, criteria, args.prompt,
-            elo_mode=elo_mode,
-            elo_K=elo_K,
-            n_rounds=args.rounds,
-            output=output,
-            model=args.model,
-            effort=args.effort,
-            provider=args.provider,
-        )
+        mode_elo(artifacts, criteria, task, args.output, args.model, args.effort, args.provider,
+                 elo_mode, elo_K, args.rounds)
 
 
 if __name__ == "__main__":

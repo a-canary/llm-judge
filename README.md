@@ -72,9 +72,34 @@ Options:
 
 | Provider | Config | Notes |
 |----------|--------|-------|
-| `cli` (default) | Claude CLI in PATH | Uses `claude-sonnet-4-6` by default |
-| `minimax` | API key at `pass show minimax/api-key` | API base: `https://api.minimax.io/v1` |
-| Arbitrary URL | Any OpenAI-compatible endpoint | Pass full URL as `--provider` |
+| `cli` (default) | Claude CLI in PATH | Uses `claude-sonnet-4-6` by default, no API key needed |
+| `minimax` | API key | See credential lookup below |
+| `openai` | API key | See credential lookup below |
+| `<URL>` | Any OpenAI-compatible endpoint | See credential lookup below |
+
+### Credential Lookup (cross-platform, pipeline-friendly)
+
+API keys are looked up in this priority order:
+
+1. **`LLM_JUDGE_API_KEY`** env var — pipeline-friendly, always wins
+2. **`keyring`** — cross-platform system keychain (recommended for dev machines)
+   ```bash
+   # macOS Keychain / Windows Credential Manager / GNOME libsecret
+   python -m keyring set llm-judge minimax://api_key sk-your-key-here
+   python -m keyring set llm-judge openai://api_key sk-your-key-here
+   ```
+3. **`pass`** (Unix-only, last resort)
+   ```bash
+   pass insert minimax/api-key
+   pass insert openai/api-key
+   ```
+
+Base URL is looked up in this order:
+1. **`LLM_JUDGE_API_BASE`** env var (pipeline-friendly)
+2. Provider default (`https://api.minimax.io/v1` for minimax, `https://api.openai.com/v1` for openai)
+3. Raw URL (if you pass a full URL as `--provider`)
+
+**Tip:** For CI/CD pipelines, set `LLM_JUDGE_API_KEY` and `LLM_JUDGE_API_BASE` as environment variables. For local development, use keyring — it persists across sessions without requiring env vars.
 
 ### Criteria Dimensions
 
