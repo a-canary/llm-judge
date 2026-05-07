@@ -55,8 +55,8 @@ Output: Markdown table with final Elo rating and match count per artifact, plus 
 | `--effort LEVEL` | Claude effort (`low`, `medium`, `high`) | `high` |
 | `--criteria FILE` | Path to criteria JSON file | built-in generic |
 | `--criteria-text JSON` | Inline criteria as JSON string | built-in generic |
-| `--elo-rank K` | (elo) Sorted top-K | — |
-| `--elo-class K` | (elo) Roughly-sorted class K | — |
+| `--elo-rank K` | (elo) Sorted top-K: R3 competes ranks 1..K+2, eliminates rest | — |
+| `--elo-class K` | (elo) Pivot top-K: competes ranks K-2..K+2 — returns top K unsorted. Best for EA selection when you only need to eliminate the bottom N-K | — |
 | `--rounds N` | (elo) Number of Swiss rounds | `3` |
 | `--output FILE` | Write output to file | stdout |
 
@@ -97,12 +97,13 @@ llm-judge gate \
   --prompt "Is this code safe to merge?" \
   pr_1234.md
 
-# Elo with narrowed class (find ranks 4-6)
+# Elo with narrowed top-K (best for EA — keep top K after breeding)
+# --elo-rank 8 with pop=16 keeps top 50%
 llm-judge elo \
-  --elo-class 5 \
+  --elo-rank 8 \
   --rounds 3 \
-  --prompt "Rank these essays by analytical depth" \
-  essays/*.md
+  --prompt "Rank the top candidates" \
+  artifacts/*.md
 
 # Elo with custom model via arbitrary OpenAI-compatible URL
 llm-judge elo \

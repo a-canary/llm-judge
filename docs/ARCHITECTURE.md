@@ -85,9 +85,13 @@ class ArtifactElo:
 
 ### Narrowing Schedule
 ```
-all:   [N, N, N]    — full competition every round
-rank:  [N, N, K+2]  — R3 competes ranks 1..K+2, output 1..K
-class: [N, N, K]    — R3 competes ranks K-2..K+2, output 1..K
+all:  [N, N, N]        — full competition every round
+rank: [N, N, K+2]      — R3 competes ranks 1..K+2, output 1..K
+                           Best for EA: keep top K after breeding
+                           (e.g. --elo-rank 8 with pop=16 → keep top 50%)
+class:[N, N, K]        — R3 competes ranks K-2..K+2, output 1..K (unsorted)
+                           Best for EA: select survivors without full sort
+                           (e.g. --elo-class 4 with pop=16 → 4 unsorted survivors)
 ```
 
 ## Error Handling

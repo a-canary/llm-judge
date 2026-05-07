@@ -520,7 +520,7 @@ Examples:
   llm-judge gate ./proposal.md --prompt "Does this pass safety gates?"
   llm-judge elo ./a.go ./b.go ./c.go ./d.go --prompt "Most idiomatic Go?"
   llm-judge elo --elo-rank 3 ./*.md --prompt "Find the top 3 essays"
-  llm-judge elo --elo-class 5 ./*.md --prompt "Rank the middle tier"
+  llm-judge elo --elo-class 4 ./*.md --prompt "Select top 4 without full sort"
         """,
     )
     parser.add_argument("mode", choices=["review", "gate", "elo"])

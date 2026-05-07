@@ -35,8 +35,13 @@ llm-judge elo --prompt "Which implementation is most idiomatic Go?" a.go b.go c.
 # Elo: sorted top-K (narrows R3 competition to ranks 1..K+2)
 llm-judge elo --elo-rank 3 --prompt "Find the top 3 essays" *.md
 
-# Elo: class K (narrows R3 to ranks K-2..K+2)
-llm-judge elo --elo-class 5 --prompt "Rank the middle tier" *.md
+# Elo: keep top K (narrows R3 to ranks 1..K+2, eliminates rest)
+# Best for EA: keep top 50% after breeding — e.g. K=8 when pop=16
+llm-judge elo --elo-rank 8 --prompt "Which essays have the strongest arguments?" *.md
+
+# Elo: pivot top K (narrows R3 to ranks K-2..K+2, returns top K unsorted)
+# Best for EA: select survivors without full sort — e.g. K=4 with pop=16 keeps 4 without ranking 1-4
+llm-judge elo --elo-class 4 --prompt "Select survivors without full sort" *.md
 ```
 
 ## CLI Reference
