@@ -8,7 +8,7 @@ LLM Judge uses a configured LLM (Claude, GPT, or any OpenAI-compatible API) to e
 
 ```bash
 # Clone
-git clone https://github.com/evolved-software/llm-judge.git
+git clone https://github.com/a-canary/llm-judge.git
 cd llm-judge
 
 # Python CLI (pip)
