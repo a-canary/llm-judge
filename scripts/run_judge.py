@@ -17,72 +17,64 @@ import subprocess
 from pathlib import Path
 from typing import Optional
 
-# --------------------------------------------------------------------------_
+# --------------------------------------------------------------------------
 # Credential lookup — cross-platform, pipeline-friendly
-# --------------------------------------------------------------------------_
+# --------------------------------------------------------------------------
 
-def _provider_base_url(provider: str) -> str:
-    """Return API base URL for a provider name.
+def _resolve_api_url(provider_arg: str) -> str:
+    """Resolve the API base URL.
 
     Priority:
     1. LLM_JUDGE_API_BASE env var (pipeline-friendly, always wins)
-    2. Provider-specific default
+    2. provider_arg if it looks like a URL
     """
-    if provider == "cli":
+    if provider_arg == "cli":
         return "cli"
     env_base = os.environ.get("LLM_JUDGE_API_BASE", "").strip()
     if env_base:
         return env_base
-    if provider == "minimax":
-        return "https://api.minimax.io/v1"
-    if provider == "openai":
-        return "https://api.openai.com/v1"
-    return provider  # raw URL
+    if "://" in provider_arg:
+        return provider_arg
+    return ""
 
 
-def _get_credentials(provider: str) -> tuple[str, str]:
-    """Look up (base_url, api_key) for a provider.
+def _get_api_key(base_url: str) -> str:
+    """Look up the API key for a given base URL.
 
-    Priority per credential:
+    Priority:
     1. LLM_JUDGE_API_KEY env var  (pipeline-friendly, always wins)
-    2. keyring: service="llm-judge", key="<provider>://api_key"
-    3. pass: 'pass show <provider>/api-key'  (Unix-only, last resort)
-
-    base_url additionally falls back to LLM_JUDGE_API_BASE env var.
+    2. keyring: service="llm-judge", key="<host>://api_key"
+    3. pass: "pass show <host>/api-key"  (Unix-only, last resort)
     """
-    base_url = _provider_base_url(provider)
+    if base_url == "cli":
+        return ""
 
-    # --- API key: env var first ---
+    # Env var first
     api_key = os.environ.get("LLM_JUDGE_API_KEY", "").strip()
     if api_key:
-        return base_url, api_key
+        return api_key
 
-    # --- keyring: cross-platform system keychain ---
+    # Derive host from base_url for keyring/pass lookup
+    host = base_url.split("://")[1].rstrip("/") if "://" in base_url else base_url
+
+    # keyring: cross-platform system keychain
     try:
         import keyring
-        stored = keyring.get_password("llm-judge", f"{provider}://api_key")
+        stored = keyring.get_password("llm-judge", f"{host}://api_key")
         if stored:
-            return base_url, stored
+            return stored
     except Exception:
         pass
 
-    # --- pass: Unix-only last resort ---
-    if provider in ("minimax", "openai"):
-        for pass_path in (f"{provider}/api-key", provider):
-            try:
-                key = subprocess.check_output(["pass", "show", pass_path], text=True).strip()
-                if key:
-                    return base_url, key
-            except Exception:
-                pass
+    # pass: Unix-only last resort
+    try:
+        key = subprocess.check_output(["pass", "show", f"{host}/api-key"], text=True).strip()
+        if key:
+            return key
+    except Exception:
+        pass
 
-    # --- env-var fallbacks for common providers ---
-    if provider == "minimax":
-        return base_url, os.environ.get("MINIMAX_API_KEY", "")
-    if provider == "openai":
-        return base_url, os.environ.get("OPENAI_API_KEY", "")
-
-    return base_url, ""
+    return ""
 
 
 # ---------------------------------------------------------------------------
@@ -182,13 +174,15 @@ def call_claude(prompt: str, model: str = "claude-sonnet-4-6",
             raise RuntimeError(f"claude exited {proc.returncode}: {proc.stderr}")
         return proc.stdout.strip()
 
-    # API mode: OpenAI-compatible — unified credential lookup
-    base_url, api_key = _get_credentials(provider)
+    # API mode: OpenAI-compatible
+    base_url = _resolve_api_url(provider)
+    api_key = _get_api_key(base_url)
     if not api_key:
         raise RuntimeError(
-            f"No API key found for provider '{provider}'. "
+            f"No API key found for '{base_url}'. "
             "Set LLM_JUDGE_API_KEY env var, or use keyring "
-            "(python -m keyring set llm-judge <provider>://api_key <key>)."
+            "(python -m keyring set llm-judge <host>://api_key <key>). "
+            "Run: python -m keyring set llm-judge https://api.minimax.io/v1://api_key YOUR_KEY"
         )
     payload = {
         "model": model,
