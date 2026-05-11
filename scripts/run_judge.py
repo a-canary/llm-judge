@@ -397,19 +397,26 @@ def mode_elo(artifacts: list[dict], criteria: dict, task: str,
     dims_hash = hashlib.sha256(dims_text.encode()).hexdigest()[:12]
     cache = FIFOCache()
 
+    # Build id→content lookup from the input artifact dicts.
+    # ArtifactElo (constructed inside rank_swiss_elo) only carries
+    # content_hash — we need the full content for the judge prompt.
+    artifacts_by_id: dict[str, dict] = {a["id"]: a for a in artifacts}
+
     def compare_fn(task: str, dims_hash: str,
                    a: ArtifactElo, b: ArtifactElo,
                    cache: FIFOCache) -> dict:
         a_id = a.id
         b_id = b.id
-        a_hash = hashlib.sha256(a.content.encode()).hexdigest()[:8]
-        b_hash = hashlib.sha256(b.content.encode()).hexdigest()[:8]
+        a_content = artifacts_by_id[a_id]["content"]
+        b_content = artifacts_by_id[b_id]["content"]
+        a_hash = a.content_hash
+        b_hash = b.content_hash
         cached = cache.get(task, dims_hash, a_id, a_hash, b_id, b_hash)
         if cached:
             return cached
         prompt = build_pairwise_prompt(
-            {"id": a_id, "content": a.content},
-            {"id": b_id, "content": b.content},
+            {"id": a_id, "content": a_content},
+            {"id": b_id, "content": b_content},
             criteria["dimensions"], task
         )
         raw = call_claude(prompt, model=model, effort=effort, provider=provider)
