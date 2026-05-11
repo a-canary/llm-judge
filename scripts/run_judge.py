@@ -497,7 +497,7 @@ Examples:
         """,
     )
     parser.add_argument("mode", choices=["review", "gate", "elo"])
-    parser.add_argument("artifacts", nargs="*", help="File paths, URLs, or inline:TEXT (put before --prompt)")
+    parser.add_argument("artifacts", nargs="+", help="File paths, URLs, or inline:TEXT (put before --prompt)")
     parser.add_argument("--prompt", help="Task framing what good means (required)")
     parser.add_argument("--model", default="claude-sonnet-4-6", help="Model name [default: claude-sonnet-4-6]")
     parser.add_argument("--provider", default="cli",
