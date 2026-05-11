@@ -78,8 +78,8 @@ if __name__ == "__main__":
     results.append(("review",   run("review", timeout=360, desc="TEST: review (4 artifacts)")))
     results.append(("gate",     run("gate",   timeout=180, desc="TEST: gate (2 artifacts)", n_artifacts=2)))
     results.append(("elo-full",  run("elo",    timeout=480, desc="TEST: elo full (4 artifacts, 3 rounds)")))
-    results.append(("elo-topk",  run("elo",    extra_args=["--rank","2"],   timeout=480, desc="TEST: elo top-2")))
-    results.append(("elo-band",  run("elo",    extra_args=["--rank","2..3"], timeout=480, desc="TEST: elo band 2-3")))
+    results.append(("elo-topk",  run("elo",    extra_args=["--elo-rank","2"],   timeout=480, desc="TEST: elo top-2")))
+    results.append(("elo-class", run("elo",    extra_args=["--elo-class","2"], timeout=480, desc="TEST: elo class 2")))
 
     print(f"\n{'='*60}\nSUMMARY\n{'='*60}")
     for name, ok in results:

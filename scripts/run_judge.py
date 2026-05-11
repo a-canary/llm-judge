@@ -285,9 +285,12 @@ ARTIFACT:
 # ---------------------------------------------------------------------------
 
 def parse_pairwise_result(raw: str) -> dict:
+    # Strip MiniMax thinking blocks before parsing
+    # e.g. <thinking>...</thinking> injected by MiniMax model before JSON
+    cleaned = re.sub(r'<thinking>.*?</thinking>', '', raw, flags=re.DOTALL)
     try:
-        # Try JSON first
-        data = json.loads(raw)
+        # Try JSON first (on cleaned text to skip thinking blocks)
+        data = json.loads(cleaned)
         return {
             "a_score": float(data["a_score"]),
             "b_score": float(data["b_score"]),
@@ -296,17 +299,17 @@ def parse_pairwise_result(raw: str) -> dict:
         }
     except Exception:
         pass
-    # Fallback: regex
+    # Fallback: regex on cleaned text
     winner = None
     for w in ("A", "B"):
-        if re.search(rf'\bWinner:\s*{w}\b', raw, re.IGNORECASE):
+        if re.search(rf'\bWinner:\s*{w}\b', cleaned, re.IGNORECASE):
             winner = w
             break
-    scores = [float(s) for s in re.findall(r'Score[_ ]?[AB]?:\s*(\d+\.?\d*)', raw, re.IGNORECASE)]
+    scores = [float(s) for s in re.findall(r'Score[_ ]?[AB]?:\s*(\d+\.?\d*)', cleaned, re.IGNORECASE)]
     a_score = scores[0] if len(scores) > 0 else 5.0
     b_score = scores[1] if len(scores) > 1 else 5.0
     winner = winner or ("A" if a_score > b_score else "B" if b_score > a_score else "A")
-    return {"a_score": a_score, "b_score": b_score, "winner": winner, "reason": raw[:200]}
+    return {"a_score": a_score, "b_score": b_score, "winner": winner, "reason": cleaned[:200]}
 
 
 def parse_gate_result(raw: str) -> dict:
@@ -387,23 +390,26 @@ def mode_elo(artifacts: list[dict], criteria: dict, task: str,
 
     import sys
     sys.path.insert(0, str(Path(__file__).parent.parent / "references"))
-    from elo import FIFOCache, rank_swiss_elo
+    from elo import FIFOCache, rank_swiss_elo, ArtifactElo
 
     n = len(artifacts)
     dims_text = build_dimensions_text(criteria["dimensions"])
     dims_hash = hashlib.sha256(dims_text.encode()).hexdigest()[:12]
     cache = FIFOCache()
 
-    def compare_fn(a_id: str, a_elo: float, a_content: str,
-                   b_id: str, b_elo: float, b_content: str) -> dict:
-        a_hash = hashlib.sha256(a_content.encode()).hexdigest()[:8]
-        b_hash = hashlib.sha256(b_content.encode()).hexdigest()[:8]
+    def compare_fn(task: str, dims_hash: str,
+                   a: ArtifactElo, b: ArtifactElo,
+                   cache: FIFOCache) -> dict:
+        a_id = a.id
+        b_id = b.id
+        a_hash = hashlib.sha256(a.content.encode()).hexdigest()[:8]
+        b_hash = hashlib.sha256(b.content.encode()).hexdigest()[:8]
         cached = cache.get(task, dims_hash, a_id, a_hash, b_id, b_hash)
         if cached:
             return cached
         prompt = build_pairwise_prompt(
-            {"id": a_id, "content": a_content},
-            {"id": b_id, "content": b_content},
+            {"id": a_id, "content": a.content},
+            {"id": b_id, "content": b.content},
             criteria["dimensions"], task
         )
         raw = call_claude(prompt, model=model, effort=effort, provider=provider)
@@ -428,7 +434,7 @@ def mode_elo(artifacts: list[dict], criteria: dict, task: str,
         elo_mode=elo_mode,
         elo_K=elo_K,
     )
-    ranked_ids = result["ranked_ids"]
+    ranked_ids = result["ranked"]
     rounds_log = result["rounds_log"]
     cache_stats = cache.stats()
 
@@ -449,15 +455,16 @@ def mode_elo(artifacts: list[dict], criteria: dict, task: str,
         "| Rank | Artifact       | Elo    | Matches |",
         "|------|----------------|--------|---------|",
     ]
-    for rank, ae in enumerate(result["ranked"], 1):
-        lines.append(f"| {rank}    | {ae.id:<15} | {ae.elo:6.1f} | {len(ae.matches):7} |")
+    for rank, aid in enumerate(ranked_ids, 1):
+        ae = result["artifacts"][aid]
+        lines.append(f"| {rank}    | {ae['id']:<15} | {ae['elo']:6.1f} | {ae['n']:7} |")
 
     if rounds_log:
         lines.append("\n## Rounds Log")
         for rlog in rounds_log:
-            lines.append(f"\n### Round {rlog['round']} — {len(rlog['matches'])} matches")
-            for m in rlog["matches"]:
-                lines.append(f"- ({m['a_id']} {m['a_elo']:.0f}) vs ({m['b_id']} {m['b_elo']:.0f}) → {m['winner']} | {m['reason'][:80]}")
+            lines.append(f"\n### Round {rlog['round']} — {len(rlog['pairs'])} matches")
+            for m in rlog["pairs"]:
+                lines.append(f"- ({m['a']} {m['a_elo_after']:.0f}) vs ({m['b']} {m['b_elo_after']:.0f}) → {m['winner']} | {m['reason'][:80]}")
 
     text = "\n".join(lines)
     if output:
