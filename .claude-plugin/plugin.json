@@ -1,0 +1,31 @@
+{
+  "name": "llm-judge",
+  "version": "2026.05.27.200300",
+  "description": "CLI + pipeliner module for evaluating artifacts with LLMs — Swiss Elo ranking, pass/gate, and qualitative review. Unblocks EA fitness selection and gate checks on generated documents.",
+  "author": {
+    "name": "a-canary"
+  },
+  "license": "MIT",
+  "runtime": {
+    "python": ">=3.9"
+  },
+  "entry": {
+    "cli": "scripts/run_judge.py",
+    "pipeliner": "pipeliner/llm_judge_module.ts"
+  },
+  "dependencies": [],
+  "env": [
+    {
+      "name": "LLM_JUDGE_API_KEY",
+      "description": "API key for --provider minimax or --provider openai. If not set, uses keyring via pass.",
+      "required": false
+    },
+    {
+      "name": "LLM_JUDGE_API_BASE",
+      "description": "Base URL for OpenAI-compatible provider. Optional.",
+      "required": false
+    }
+  ],
+  "install_hook": "pip install -e .",
+  "keywords": ["llm", "judge", "evaluation", "elo", "ranking", "claude"]
+}

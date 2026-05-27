@@ -200,9 +200,16 @@ Result: each of 3 pairs compared exactly once.
 
 **`--provider cli`** (default) uses the local `claude` CLI binary. Model defaults to `claude-sonnet-4-6`.
 
-**`--provider minimax`** uses the minimax API at `https://api.minimax.io/v1` (set `--model` to the API model name, e.g. `MiniMax-M2.7`). API key is read from `pass show minimax/api-key` (NOT `api/minimax` — that path returns the password-store tree name, not the key).
+**`--provider minimax`** uses the MiniMax API at `https://api.minimax.io/v1` (set `--model` to the API model name, e.g. `MiniMax-M2.7`). API key is read from `pass show minimax/api-key` (NOT `api/minimax` — that path returns the password-store tree name, not the key). Falls back to `LLM_JUDGE_API_KEY` env var if keyring is unavailable.
 
-**Arbitrary OpenAI-compatible APIs** are also supported — pass the full base URL as `--provider`.
+**`--provider openai`** or arbitrary OpenAI-compatible URLs — API key from `pass show openai/key` or `LLM_JUDGE_API_KEY` env var. Base URL override via `LLM_JUDGE_API_BASE` or `--provider <url>`.
+
+**Keyring credential precedence (env vars override keyring):**
+1. `LLM_JUDGE_API_KEY` env var (highest priority, pipeline-safe)
+2. `pass show <provider>/api-key` (keyring via `pass`)
+3. `LLM_JUDGE_API_BASE` env var (for custom base URLs, lowest priority)
+
+Without credentials, `--provider cli` is the only working option.
 
 **Why weaker models can discriminate in Elo mode:** Elo comparisons are *anchored pairwise* — the judge only needs to pick which of two artifacts is better, not assign absolute quality scores. This relative judgment is much easier than absolute scoring, so even small/cheap models (e.g. MiniMax-M2.7) can rank accurately. For review/gate modes (absolute scoring), a stronger model is advisable.
 
