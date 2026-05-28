@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "18"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.9"
+
+      - name: Install Node dependencies
+        run: npm ci
+
+      - name: Install Python dependencies
+        run: pip install -e .
+
+      - name: Lint
+        run: |
+          # No lint config present in this project — lint step skipped.
+          # Add .eslintrc* or prettier config to enable.
+          echo "No lint configuration found; skipping lint."
+
+      - name: Run TypeScript / Node.js tests
+        run: node --test pipeliner/llm_judge_module.test.ts
+
+      - name: Run Python tests
+        run: python3 -m pytest tests/ -v
