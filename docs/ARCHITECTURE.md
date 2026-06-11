@@ -25,8 +25,7 @@ llm-judge/
 | Provider | Transport | Model |
 |----------|-----------|-------|
 | `cli` (default) | `claude` CLI binary | `--model` arg |
-| `minimax` | `urllib` POST to `https://api.minimax.io/v1/chat/completions` | `--model` arg |
-| `<URL>` | `urllib` POST to arbitrary OpenAI-compatible endpoint | `--model` arg |
+| `<URL>` | `urllib` POST to arbitrary OpenAI-compatible endpoint (e.g. `https://api.minimax.io/v1`) | `--model` arg |
 
 ## Cache Flow
 
