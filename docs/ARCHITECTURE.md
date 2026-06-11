@@ -12,7 +12,7 @@ llm-judge/
 ├── references/
 │   ├── elo.py              # Swiss Elo engine + FIFOCache
 │   ├── criteria_template.md # Blank criteria JSON template
-│   └── minimax-provider-quirks.md  # Provider-specific notes
+│   └── providers.py        # Cross-platform credential lookup (resolve_api_url, get_api_key)
 └── docs/
     ├── ARCHITECTURE.md     # This file
     └── CLI.md             # Full CLI reference
