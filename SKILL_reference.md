@@ -284,4 +284,4 @@ has no discriminatory power — replace it. Target: at least 20% of prompts disc
 - `scripts/run_judge.py` — CLI orchestrator (review, gate, elo modes)
 - `references/elo.py` — Swiss Elo engine: FIFOCache, ArtifactElo, rank_swiss_elo, `_compute_narrowing_schedule`, `_compute_return_band`
 - `references/criteria_template.md` — Blank criteria JSON template with domain examples
-- `references/minimax-provider-quirks.md` — Minimax API provider quirks: pass key path, thinking block stripping, HTTP 400 on large artifacts, hermes chat CLI flags
+- `references/providers.py` — Cross-platform credential lookup (resolve_api_url, get_api_key) shared by CLI and tests
