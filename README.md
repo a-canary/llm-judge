@@ -57,7 +57,7 @@ Modes:
 Options:
   --prompt TEXT       Task framing what "good" means (required)
   --model MODEL      Model name [default: claude-sonnet-4-6]
-  --provider NAME    Provider: cli, minimax, or OpenAI-compatible URL [default: cli]
+  --provider NAME    Provider: cli or OpenAI-compatible URL [default: cli]
   --effort LEVEL    Claude effort setting [default: high]
   --criteria FILE    Path to criteria JSON file [default: built-in generic]
   --criteria-text JSON  Inline criteria JSON string

@@ -155,8 +155,7 @@ def call_claude(prompt: str, model: str = "claude-sonnet-4-6",
                 provider: str = "cli") -> str:
     """
     provider "cli"    → use `claude` CLI (local). model is the CLI model name.
-    provider "minimax" → use minimax API (OpenAI-compatible). model is the API model name.
-    provider "<URL>"  → use arbitrary OpenAI-compatible API base URL.
+    provider "<URL>"  → use arbitrary OpenAI-compatible API base URL. model is the API model name.
     """
     if provider == "cli":
         if not shutil.which("claude"):
@@ -501,7 +500,7 @@ Examples:
     parser.add_argument("--prompt", help="Task framing what good means (required)")
     parser.add_argument("--model", default="claude-sonnet-4-6", help="Model name [default: claude-sonnet-4-6]")
     parser.add_argument("--provider", default="cli",
-                        help="Provider: cli, minimax, openai, or URL [default: cli]")
+                        help='Provider: "cli" (claude CLI) or an OpenAI-compatible base URL [default: cli]')
     parser.add_argument("--effort", default="high",
                         help="Claude effort: low, medium, high [default: high]")
     parser.add_argument("--criteria", type=Path, help="Path to criteria JSON file")
