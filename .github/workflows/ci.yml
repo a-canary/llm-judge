@@ -34,8 +34,11 @@ jobs:
           # Add .eslintrc* or prettier config to enable.
           echo "No lint configuration found; skipping lint."
 
-      - name: Run TypeScript / Node.js tests
-        run: node --test pipeliner/llm_judge_module.test.ts
+      - name: Node CLI shim smoke test
+        # The pipeliner/*.test.ts suite spawns the `claude` CLI for live LLM
+        # calls and cannot run headless in CI. Smoke-test the Node shim instead:
+        # it must load and delegate to the Python CLI, printing usage (exit 0).
+        run: node src/cli.js --help
 
       - name: Run Python tests
         run: python3 -m pytest tests/ -v
