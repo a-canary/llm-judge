@@ -5,14 +5,15 @@
 ```
 llm-judge/
 ├── src/
-│   └── cli.js              # Node.js CLI entry point (wrapper)
+│   └── cli.js              # Node.js CLI entry point (thin Python spawner)
 ├── scripts/
 │   ├── run_judge.py        # Python CLI: review, gate, elo modes
 │   └── test_judge.py       # Test harness with sleep-essay fixtures
 ├── references/
+│   ├── __init__.py         # Package marker
 │   ├── elo.py              # Swiss Elo engine + FIFOCache
-│   ├── criteria_template.md # Blank criteria JSON template
-│   └── providers.py        # Cross-platform credential lookup (resolve_api_url, get_api_key)
+│   ├── providers.py        # Cross-platform credential lookup
+│   └── criteria_template.md # Blank criteria JSON template
 └── docs/
     ├── ARCHITECTURE.md     # This file
     └── CLI.md             # Full CLI reference

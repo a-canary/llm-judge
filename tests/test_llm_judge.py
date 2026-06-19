@@ -3,11 +3,12 @@
 import json
 import sys
 import os
-import hashlib
 
-# Ensure references/elo is importable via 'references.elo'
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "references"))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
+# Enable package-style imports from project root
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+SCRIPTS = os.path.join(ROOT, "scripts")
+sys.path.insert(0, ROOT)
+sys.path.insert(0, SCRIPTS)
 
 from references.elo import FIFOCache, rank_swiss_elo, ArtifactElo
 from run_judge import (
@@ -112,7 +113,7 @@ def test_load_artifact_content_hash_stable():
 
 def _fresh_cache(max_size=128):
     """Create a FIFOCache with an isolated temp backing file."""
-    import references.elo as em
+    from references import elo as em
     old = em.CACHE_PATH
     path = old.parent / f"_test_cache_{os.getpid()}_{id(object())}.json"
     em.CACHE_PATH = path
