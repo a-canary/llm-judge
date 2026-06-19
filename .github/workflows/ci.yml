@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "18"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.9"
+
+      - name: Install Node dependencies
+        run: npm ci
+
+      - name: Install Python dependencies
+        run: pip install -e ".[test]"
+
+      - name: Lint
+        run: |
+          # No lint config present in this project — lint step skipped.
+          # Add .eslintrc* or prettier config to enable.
+          echo "No lint configuration found; skipping lint."
+
+      - name: Node CLI shim smoke test
+        # The pipeliner/*.test.ts suite spawns the `claude` CLI for live LLM
+        # calls and cannot run headless in CI. Smoke-test the Node shim instead:
+        # it must load and delegate to the Python CLI, printing usage (exit 0).
+        run: node src/cli.js --help
+
+      - name: Run Python tests
+        run: python3 -m pytest tests/ -v

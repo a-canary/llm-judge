@@ -11,14 +11,29 @@ LLM Judge uses a configured LLM (Claude, GPT, or any OpenAI-compatible API) to e
 git clone https://github.com/a-canary/llm-judge.git
 cd llm-judge
 
-# Python CLI (pip)
-pip install -e .
-llm-judge --help
+# Python CLI — requires a virtual environment (Python packaging standard)
+python3 -m venv venv
+venv/bin/pip install -e .
+vllm-judge --help
 
-# Node.js CLI (npm)
+# Node.js CLI (thin Python wrapper — same engine, node is the host)
 npm install -g .
-llm-judge --help
+npm run test   # runs review + gate + elo against test/fixtures/
 ```
+
+### Credentials
+
+API keys are resolved in this priority order:
+
+1. **`LLM_JUDGE_API_KEY`** / **`LLM_JUDGE_API_BASE`** env vars (pipeline-friendly — always use these in CI)
+2. **`MINIMAX_API_KEY`** / **`MINIMAX_API_BASE`** (fallback for the included MiniMax endpoint)
+3. **`keyring`** — cross-platform system keychain (dev machines)
+   ```bash
+   python3 -m keyring set llm-judge api.minimax.io://api_key sk-your-key-here
+   ```
+4. **`pass`** — Unix-only last resort
+
+The examples in `examples/` accept either style — see their header comments.
 
 ## Quick Start
 
