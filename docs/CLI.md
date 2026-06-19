@@ -51,7 +51,7 @@ Output: Markdown table with final Elo rating and match count per artifact, plus 
 |------|-------------|---------|
 | `--prompt TEXT` | Task framing what "good" means (required) | — |
 | `--model MODEL` | Model name | `claude-sonnet-4-6` |
-| `--provider NAME` | `cli`, `minimax`, or URL | `cli` |
+| `--provider NAME` | `cli` or URL (any OpenAI-compatible base URL) | `cli` |
 | `--effort LEVEL` | Claude effort (`low`, `medium`, `high`) | `high` |
 | `--criteria FILE` | Path to criteria JSON file | built-in generic |
 | `--criteria-text JSON` | Inline criteria as JSON string | built-in generic |
@@ -90,9 +90,9 @@ llm-judge review \
   --prompt "Does this contract meet regulatory standards?" \
   contract_v1.md contract_v2.md
 
-# Gate with minimax provider
+# Gate with a MiniMax-compatible API endpoint (URL-only, no named providers)
 llm-judge gate \
-  --provider minimax \
+  --provider https://api.minimax.io/v1 \
   --model MiniMax-M2.7 \
   --prompt "Is this code safe to merge?" \
   pr_1234.md

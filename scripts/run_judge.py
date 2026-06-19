@@ -14,67 +14,17 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from typing import Optional
 
-# --------------------------------------------------------------------------
-# Credential lookup — cross-platform, pipeline-friendly
-# --------------------------------------------------------------------------
+# Enable package-style imports from project root
+_SCRIPT_DIR = Path(__file__).parent.resolve()
+_ROOT = _SCRIPT_DIR.parent
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
 
-def _resolve_api_url(provider_arg: str) -> str:
-    """Resolve the API base URL.
-
-    Priority:
-    1. LLM_JUDGE_API_BASE env var (pipeline-friendly, always wins)
-    2. provider_arg if it looks like a URL
-    """
-    if provider_arg == "cli":
-        return "cli"
-    env_base = os.environ.get("LLM_JUDGE_API_BASE", "").strip()
-    if env_base:
-        return env_base
-    if "://" in provider_arg:
-        return provider_arg
-    return ""
-
-
-def _get_api_key(base_url: str) -> str:
-    """Look up the API key for a given base URL.
-
-    Priority:
-    1. LLM_JUDGE_API_KEY env var  (pipeline-friendly, always wins)
-    2. keyring: service="llm-judge", key="<host>://api_key"
-    3. pass: "pass show <host>/api-key"  (Unix-only, last resort)
-    """
-    if base_url == "cli":
-        return ""
-
-    # Env var first
-    api_key = os.environ.get("LLM_JUDGE_API_KEY", "").strip()
-    if api_key:
-        return api_key
-
-    # Derive host from base_url for keyring/pass lookup
-    host = base_url.split("://")[1].rstrip("/") if "://" in base_url else base_url
-
-    # keyring: cross-platform system keychain
-    try:
-        import keyring
-        stored = keyring.get_password("llm-judge", f"{host}://api_key")
-        if stored:
-            return stored
-    except Exception:
-        pass
-
-    # pass: Unix-only last resort
-    try:
-        key = subprocess.check_output(["pass", "show", f"{host}/api-key"], text=True).strip()
-        if key:
-            return key
-    except Exception:
-        pass
-
-    return ""
+from references.providers import resolve_api_url as _resolve_api_url, get_api_key as _get_api_key
 
 
 # ---------------------------------------------------------------------------
@@ -155,8 +105,7 @@ def call_claude(prompt: str, model: str = "claude-sonnet-4-6",
                 provider: str = "cli") -> str:
     """
     provider "cli"    → use `claude` CLI (local). model is the CLI model name.
-    provider "minimax" → use minimax API (OpenAI-compatible). model is the API model name.
-    provider "<URL>"  → use arbitrary OpenAI-compatible API base URL.
+    provider "<URL>"  → use arbitrary OpenAI-compatible API base URL. model is the API model name.
     """
     if provider == "cli":
         if not shutil.which("claude"):
@@ -501,7 +450,7 @@ Examples:
     parser.add_argument("--prompt", help="Task framing what good means (required)")
     parser.add_argument("--model", default="claude-sonnet-4-6", help="Model name [default: claude-sonnet-4-6]")
     parser.add_argument("--provider", default="cli",
-                        help="Provider: cli, minimax, openai, or URL [default: cli]")
+                        help='Provider: "cli" (claude CLI) or an OpenAI-compatible base URL [default: cli]')
     parser.add_argument("--effort", default="high",
                         help="Claude effort: low, medium, high [default: high]")
     parser.add_argument("--criteria", type=Path, help="Path to criteria JSON file")

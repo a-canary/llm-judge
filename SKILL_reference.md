@@ -57,7 +57,7 @@ llm-judge elo --elo-class 5 --prompt "Rank the middle tier" -- ./*.md
 | Flag | Description | Default |
 |------|-------------|---------|
 | `--model` | Model name. For CLI provider, use CLI model name (e.g. `claude-sonnet-4-6`). For API providers, use the provider's model ID. | `claude-sonnet-4-6` |
-| `--provider` | `cli` (claude CLI), `minimax` (API), or OpenAI-compatible URL. Because Elo comparisons are anchored pairwise judgments, weaker/smaller models can discriminate accurately. | `cli` |
+| `--provider` | `cli` (claude CLI) or an OpenAI-compatible base URL. Because Elo comparisons are anchored pairwise judgments, weaker/smaller models can discriminate accurately. | `cli` |
 | `--effort` | Claude effort setting | `high` |
 | `--prompt` | Task framing what "good" means — this is the question being evaluated | (required) |
 | `--criteria` | Path to a criteria JSON file | (built-in generic) |
@@ -190,19 +190,17 @@ Result: each of 3 pairs compared exactly once.
 - **Narrowing with small N:** With N ≤ 10, narrowing eliminates artifacts after only 1–2 comparisons. Rankings may diverge significantly from a full run. Only use narrowing for N ≥ 20.
 - **Cache is persistent:** The FIFO cache at `~/.cache/llm-judge/fifo_cache.json` persists across runs. Sequential `--elo-rank` calls will hit cache and return identical results — this is expected behavior.
 - **Using `nohup &` in a foreground terminal call:** Long-running benchmark processes (50+ prompts × 30-90s each) must use `background=true` on the terminal tool, NOT `nohup ... &` in a foreground call. The terminal tool will refuse foreground commands that use shell-level background operators (`nohup`, `disown`, `setsid`, `&`). Use `terminal(background=true)` for all long-running batch jobs.
-- **MiniMax model emits ` op ` thinking blocks that corrupt JSON parsing:** The `parse_pairwise_result()` function must strip ` op ` blocks before JSON parsing. Without this, pairwise comparison results fail to parse on every MiniMax API call. The fix is a regex strip before `_strip_code_fence`.
-- **MiniMax ignores JSON-only instructions in API mode:** When using `--provider minimax`, the model may return natural language even when the prompt says "Respond ONLY with JSON". Use `--provider cli` (Claude Sonnet) for reliable structured output if JSON parsing failures appear. Alternatively, increase `max_tokens` to 4096 and add a final-system-prompt-style constraint.
-- **Large artifacts cause HTTP 400 or truncated JSON:** Artifacts over ~100KB cause `HTTPError: 400 Bad Request` on MiniMax API. Truncate to ≤50KB before evaluation: `head -c 50000 artifact.md > artifact_truncated.md`.
-- **`cpk_` prefix = Clerk/Nous Portal key, NOT inference API key:** A key starting with `cpk_` is a Clerk authentication token for the Nous portal, not a provider inference key. It will NOT work for `chutes` or `openrouter` providers — both need raw `sk-` API keys. Symptoms: `hermes chat --provider chutes` falls back to openrouter with "Primary auth failed". Fix: obtain the inference API key from the provider's dashboard (Chutes: api.chutes.ai, OpenRouter: openrouter.ai/keys). The `pass show chutes` or `pass show openrouter` paths are the correct sources.
-- **`hermes chat` CLI flags differ from expected:** If integrating with hermes chat directly (not via this skill), note: `--quiet` does not exist — use `-Q`. `--profile` is not a valid `hermes chat` flag (profiles are selected via `hermes profile use`, not passed as CLI args).
+- **MiniMax model emits ` op ` thinking blocks that corrupt JSON parsing:** When `--provider` points to a MiniMax-compatible URL (e.g. `https://api.minimax.io/v1`), the response may contain ` op ` thinking blocks. The `parse_pairwise_result()` function must strip ` op ` blocks before JSON parsing. The fix is a regex strip before `_strip_code_fence`.
+- **MiniMax ignores JSON-only instructions in API mode:** When `--provider` points to a MiniMax-compatible URL, the model may return natural language even when the prompt says "Respond ONLY with JSON". Use `--provider cli` (Claude Sonnet) for reliable structured output if JSON parsing failures appear. Alternatively, increase `max_tokens` to 4096 and add a final-system-prompt-style constraint.
+- **Large artifacts cause HTTP 400 or truncated JSON:** Artifacts over ~100KB cause `HTTPError: 400 Bad Request` on the MiniMax API. Truncate to ≤50KB before evaluation: `head -c 50000 artifact.md > artifact_truncated.md`.
 
 ### Provider and Model Selection
 
 **`--provider cli`** (default) uses the local `claude` CLI binary. Model defaults to `claude-sonnet-4-6`.
 
-**`--provider minimax`** uses the minimax API at `https://api.minimax.io/v1` (set `--model` to the API model name, e.g. `MiniMax-M2.7`). API key is read from `pass show minimax/api-key` (NOT `api/minimax` — that path returns the password-store tree name, not the key).
+**`--provider <URL>`** uses any OpenAI-compatible base URL (e.g. `https://api.minimax.io/v1`, `https://api.openai.com/v1`, `http://localhost:8000/v1`). Set `--model` to the API model name. The API key is looked up under the URL's host — first via the `LLM_JUDGE_API_KEY` env var, then via keyring (`python -m keyring set llm-judge <host>://api_key <key>`), then via `pass show <host>/api-key` (Unix-only last resort).
 
-**Arbitrary OpenAI-compatible APIs** are also supported — pass the full base URL as `--provider`.
+**No named providers** — the minimax/openai/etc. names from earlier versions are gone; pass the full base URL instead.
 
 **Why weaker models can discriminate in Elo mode:** Elo comparisons are *anchored pairwise* — the judge only needs to pick which of two artifacts is better, not assign absolute quality scores. This relative judgment is much easier than absolute scoring, so even small/cheap models (e.g. MiniMax-M2.7) can rank accurately. For review/gate modes (absolute scoring), a stronger model is advisable.
 
@@ -284,4 +282,4 @@ has no discriminatory power — replace it. Target: at least 20% of prompts disc
 - `scripts/run_judge.py` — CLI orchestrator (review, gate, elo modes)
 - `references/elo.py` — Swiss Elo engine: FIFOCache, ArtifactElo, rank_swiss_elo, `_compute_narrowing_schedule`, `_compute_return_band`
 - `references/criteria_template.md` — Blank criteria JSON template with domain examples
-- `references/minimax-provider-quirks.md` — Minimax API provider quirks: pass key path, thinking block stripping, HTTP 400 on large artifacts, hermes chat CLI flags
+- `references/providers.py` — Cross-platform credential lookup (resolve_api_url, get_api_key) shared by CLI and tests
