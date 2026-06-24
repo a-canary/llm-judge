@@ -25,6 +25,7 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 from references.providers import resolve_api_url as _resolve_api_url, get_api_key as _get_api_key
+from references import elo as _elo
 
 
 # ---------------------------------------------------------------------------
@@ -337,14 +338,10 @@ def mode_elo(artifacts: list[dict], criteria: dict, task: str,
              output: Optional[str], model: str, effort: str, provider: str,
              elo_mode: str, elo_K: int, n_rounds: int) -> str:
 
-    import sys
-    sys.path.insert(0, str(Path(__file__).parent.parent / "references"))
-    from elo import FIFOCache, rank_swiss_elo, ArtifactElo
-
     n = len(artifacts)
     dims_text = build_dimensions_text(criteria["dimensions"])
     dims_hash = hashlib.sha256(dims_text.encode()).hexdigest()[:12]
-    cache = FIFOCache()
+    cache = _elo.FIFOCache()
 
     # Build id→content lookup from the input artifact dicts.
     # ArtifactElo (constructed inside rank_swiss_elo) only carries
@@ -352,8 +349,8 @@ def mode_elo(artifacts: list[dict], criteria: dict, task: str,
     artifacts_by_id: dict[str, dict] = {a["id"]: a for a in artifacts}
 
     def compare_fn(task: str, dims_hash: str,
-                   a: ArtifactElo, b: ArtifactElo,
-                   cache: FIFOCache) -> dict:
+                   a: _elo.ArtifactElo, b: _elo.ArtifactElo,
+                   cache: _elo.FIFOCache) -> dict:
         a_id = a.id
         b_id = b.id
         a_content = artifacts_by_id[a_id]["content"]
@@ -380,7 +377,7 @@ def mode_elo(artifacts: list[dict], criteria: dict, task: str,
         cache.set(task, dims_hash, a_id, a_hash, b_id, b_hash, normalized)
         return normalized
 
-    result = rank_swiss_elo(
+    result = _elo.rank_swiss_elo(
         artifacts=artifacts,
         task=task,
         dims_hash=dims_hash,

@@ -253,6 +253,25 @@ def test_rank_swiss_elo_past_elos_respected():
     assert result["artifacts"]["a"]["elo"] > 1500
 
 
+def test_rank_swiss_elo_round_record_no_legacy_eliminated_key():
+    """Architecture-hygiene: the dead `eliminated` field is no longer emitted;
+    narrowed-out artifacts are reported only via `byes`."""
+    cache = FIFOCache()
+
+    def compare_fn(task, dims_hash, a, b, cache):
+        return {"a_score": 3.0, "b_score": 4.0, "winner": "B", "reason": "test"}
+
+    artifacts = [{"id": str(i), "content_hash": f"h{i}", "content": f"c{i}"} for i in range(6)]
+    result = rank_swiss_elo(
+        artifacts, "task", "hash", cache, compare_fn,
+        n_rounds=3, elo_mode="rank", elo_K=2,
+    )
+    for rlog in result["rounds_log"]:
+        assert "eliminated" not in rlog, (
+            f"round {rlog['round']} still emits legacy 'eliminated' key: {rlog}"
+        )
+
+
 def test_rank_swiss_elo_no_repeat_pairings():
     """Same pair never meets twice across rounds."""
     cache = FIFOCache()
