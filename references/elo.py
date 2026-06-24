@@ -262,17 +262,15 @@ def rank_swiss_elo(
             sorted_all = sorted(current, key=lambda a: (-a.elo, a.id))
             active_ids = {a.id for a in sorted_all[:n_active]}
             # Artifacts outside the active set get a bye this round (no comparison)
-            eliminated_ids = {a.id for a in sorted_all[n_active:]}
+            narrow_bye_ids = [a.id for a in sorted_all[n_active:]]
             round_record: dict = {
                 "round": rnd,
                 "pairs": [],
-                "byes": list(eliminated_ids),
+                "byes": list(narrow_bye_ids),
                 "narrowed_to": n_active,
-                "eliminated": list(eliminated_ids),
             }
         else:
             active_ids = {a.id for a in current}
-            eliminated_ids = set()
             round_record = {"round": rnd, "pairs": [], "byes": [], "narrowed_to": n_active}
 
         active_artifacts = [a for a in current if a.id in active_ids]
@@ -313,7 +311,7 @@ def rank_swiss_elo(
                 "reason": result.get("reason", ""),
             })
 
-        # Handle byes (unpaired but still active artifacts — already recorded above)
+        # Handle byes for unpaired active artifacts (narrowing byes are already in round_record["byes"]).
         bye_ids = [a.id for a in active_artifacts if a.id not in paired_ids]
         round_record["byes"].extend(bye_ids)
 
