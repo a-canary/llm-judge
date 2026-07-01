@@ -60,6 +60,18 @@ def validate_criteria(criteria: dict) -> None:
         )
 
 # ---------------------------------------------------------------------------
+# Output
+# ---------------------------------------------------------------------------
+
+def render_and_emit(text: str, output: Optional[str]) -> str:
+    """Write text to optional --output path, echo to stdout, return text.
+    Shared epilogue across review / gate / elo mode functions."""
+    if output:
+        Path(output).write_text(text)
+    print(text)
+    return text
+
+# ---------------------------------------------------------------------------
 # Artifact loading
 # ---------------------------------------------------------------------------
 
@@ -300,11 +312,7 @@ def mode_review(artifacts: list[dict], criteria: dict, task: str,
             lines.append(f"\n{feedback}\n")
         except Exception:
             lines.append(f"\n## {a['id']}\n\n{raw[:500]}\n")
-    text = "\n".join(lines)
-    if output:
-        Path(output).write_text(text)
-    print(text)
-    return text
+    return render_and_emit("\n".join(lines), output)
 
 # ---------------------------------------------------------------------------
 # Mode: gate (pass/fail)
@@ -324,11 +332,7 @@ def mode_gate(artifacts: list[dict], criteria: dict, task: str,
         icon = "✅" if r["passed"] else "❌"
         lines.append(f"{icon} **{r['id']}** — {r['score']:.2f}/5 — {r['verdict']}")
     lines.append(f"\n**Overall: {'PASS ✅' if all_passed else 'FAIL ❌'}**")
-    text = "\n".join(lines)
-    if output:
-        Path(output).write_text(text)
-    print(text)
-    return text
+    return render_and_emit("\n".join(lines), output)
 
 # ---------------------------------------------------------------------------
 # Mode: elo
@@ -419,11 +423,7 @@ def mode_elo(artifacts: list[dict], criteria: dict, task: str,
             for m in rlog["pairs"]:
                 lines.append(f"- ({m['a']} {m['a_elo_after']:.0f}) vs ({m['b']} {m['b_elo_after']:.0f}) → {m['winner']} | {m['reason'][:80]}")
 
-    text = "\n".join(lines)
-    if output:
-        Path(output).write_text(text)
-    print(text)
-    return text
+    return render_and_emit("\n".join(lines), output)
 
 # ---------------------------------------------------------------------------
 # CLI
