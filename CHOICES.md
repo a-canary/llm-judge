@@ -32,7 +32,7 @@ Build and maintain a CLI tool that evaluates artifacts with LLMs via three modes
 - Web UI or dashboard
 - Async/concurrent LLM calls (sequential is intentional — rate-limit safety)
 - Multi-model consensus (single-judge per call)
-- Automatic benchmark versioning (V1/V2/V3/V4 — lives in SKILL_reference.md, not CLI)
+- Automatic benchmark versioning (V1/V2/V3/V4 — historical, no longer shipped; see git history)
 
 ---
 
@@ -59,8 +59,10 @@ tests/                 # pytest unit tests (no live LLM calls)
 scripts/test_judge.py  # Integration test harness (live LLM, slow)
 pipeliner/             # defineModule + test suite for pipeliner integration
 docs/                  # Architecture + CLI reference
-SKILL_reference.md     # Hermes agent skill documentation (keep in sync with CLI)
 ```
+
+### Hermes skill
+- Repo-local `SKILL_reference.md` was trashed in #5 (2d60732); per the trash commit it referenced a stale provider. The skill canonical location is `arc-skills/skills/llm-judge/` (verify before depending on the path — see evidence in 2d60732).
 
 ### Elo algorithm
 - 3-round Swiss Monrad (fixed schedule)
