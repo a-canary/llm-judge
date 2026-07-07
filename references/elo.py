@@ -162,38 +162,26 @@ def _swiss_pairs(
     This guarantees no repeat pairings and same-score artifacts stay adjacent.
     """
     # Sort by Elo desc, then id asc for stable tiebreaking
-    sorted_artifacts = sorted(artifacts, key=lambda a: (a.elo, a.id), reverse=True)
-
-    unpaired: dict[int, ArtifactElo] = {i: a for i, a in enumerate(sorted_artifacts)}
+    unpaired = sorted(artifacts, key=lambda a: (a.elo, a.id), reverse=True)
     pairs: list[tuple[ArtifactElo, ArtifactElo]] = []
 
-    i = 0
-    while i < len(sorted_artifacts):
-        if i not in unpaired:
-            i += 1
-            continue
+    while unpaired:
+        a = unpaired.pop(0)
+        partner = None
 
-        a = unpaired.pop(i)
-        partner_idx = None
-
-        # Look for a novel partner: try i+1, i+2, ...
-        for j in range(i + 1, len(sorted_artifacts)):
-            if j not in unpaired:
-                continue
-            b = unpaired[j]
+        # Look for the first novel partner in Elo order
+        for j, b in enumerate(unpaired):
             pair_key = frozenset({a.id, b.id})
             if pair_key not in seen_pairs:
-                partner_idx = j
+                partner = j
                 break
-            # Mark as seen so we don't try it again
+            # Mark already-seen rejection so we don't try (a, b) again later
             seen_pairs.add(pair_key)
 
-        if partner_idx is not None:
-            b = unpaired.pop(partner_idx)
+        if partner is not None:
+            b = unpaired.pop(partner)
             pairs.append((a, b))
-        # else: no novel partner — bye for a (a is discarded, unpaired remains)
-
-        i += 1
+        # else: no novel partner — a gets a bye and is dropped from unpaired
 
     return pairs
 
@@ -258,20 +246,20 @@ def rank_swiss_elo(
         current = list(elo_map.values())
 
         # Narrow: keep only the top n_active by Elo (stable sort by id for ties)
+        sorted_all = sorted(current, key=lambda a: (-a.elo, a.id))
         if n_active < len(current):
-            sorted_all = sorted(current, key=lambda a: (-a.elo, a.id))
             active_ids = {a.id for a in sorted_all[:n_active]}
             # Artifacts outside the active set get a bye this round (no comparison)
-            narrow_bye_ids = [a.id for a in sorted_all[n_active:]]
-            round_record: dict = {
-                "round": rnd,
-                "pairs": [],
-                "byes": list(narrow_bye_ids),
-                "narrowed_to": n_active,
-            }
+            initial_byes = [a.id for a in sorted_all[n_active:]]
         else:
             active_ids = {a.id for a in current}
-            round_record = {"round": rnd, "pairs": [], "byes": [], "narrowed_to": n_active}
+            initial_byes = []
+        round_record: dict = {
+            "round": rnd,
+            "pairs": [],
+            "byes": initial_byes,
+            "narrowed_to": n_active,
+        }
 
         active_artifacts = [a for a in current if a.id in active_ids]
         pairs = _swiss_pairs(active_artifacts, seen_pairs)
@@ -287,13 +275,8 @@ def rank_swiss_elo(
             b_score = float(result.get("b_score", 3.0))
             winner = result.get("winner", "A")
 
-            # Determine winner label for Elo update
-            if winner == "A":
-                a_winner, b_winner = "me", "opp"
-            elif winner == "B":
-                a_winner, b_winner = "opp", "me"
-            else:
-                a_winner, b_winner = "draw", "draw"
+            # Map external "A"/"B"/"draw" labels into each artifact's local "me"/"opp"/"draw".
+            a_winner, b_winner = _per_perspective_winners(winner)
 
             # Record in both artifacts
             a.record(a_score, b.id, b.elo, a_winner, result.get("reason", ""))
@@ -334,6 +317,20 @@ def rank_swiss_elo(
     }
 
 
+def _per_perspective_winners(winner: str) -> tuple[str, str]:
+    """Translate an external winner label ("A"/"B"/"draw"/else) into the
+    per-artifact perspective labels used by ArtifactElo.record().
+
+    Returns (a's_label, b's_label) where each is one of "me"/"opp"/"draw".
+    Unknown/non-{A,B} winners (including missing) are treated as draw.
+    """
+    if winner == "A":
+        return "me", "opp"
+    if winner == "B":
+        return "opp", "me"
+    return "draw", "draw"
+
+
 def _compute_narrowing_schedule(N: int, n_rounds: int, elo_mode: str, elo_K: int) -> list[int]:
     """
     Compute how many artifacts compete in each round.
@@ -344,35 +341,29 @@ def _compute_narrowing_schedule(N: int, n_rounds: int, elo_mode: str, elo_K: int
       R3: band determined by mode
 
     Modes:
-      all    → [N, N, N]  — no narrowing
-      rank   → [N, N, b]  where b = min(N, K+2)
+      all    → [N, N, N]            — no narrowing
+      rank   → [N, N, b]            — b = min(N, K+2)
                   R3 competes ranks 1..b; output trimmed to ranks 1..K
-      class  → [N, N, K]  where band = (K-2)..(K+2), capped at N
-                  R3 competes K items; output trimmed to ranks 1..K
+      class  → [N, N, b-a+1]        — band = (K-2)..(K+2), capped at N
+                  R3 competes that band; output trimmed to ranks 1..K
 
     Examples:
       N=20, rank K=5:  b=min(20,7)=7  → [20, 20, 7]
-      N=20, class K=5:  a=3, b=7       → [20, 20, 5]
+      N=20, class K=5:  a=3, b=7      → [20, 20, 5]
+      N=4,  class K=5:  a=3, b=4      → [4, 4, 2]   (band capped to N)
 
     Returns list of int, one per round.
     """
-    if n_rounds < 3:
-        return [N] * n_rounds
-
-    if elo_mode == "all" or elo_K >= N:
+    if elo_mode == "all" or elo_K >= N or n_rounds < 3:
         return [N] * n_rounds
 
     if elo_mode == "rank":
-        # R3 competition: ranks 1..(K+2), output: ranks 1..K
-        b = min(N, elo_K + 2)
-        schedule = [N, N, b]          # b items compete; output = ranks 1..K
-    else:  # class
-        # R3 competition: ranks K-2..K+2 (exactly K items, capped at N)
-        a = max(1, elo_K - 2)
-        b = min(N, elo_K + 2)
-        schedule = [N, N, b - a + 1]  # K items compete; output = ranks a..b
-
-    return schedule
+        # R3 competition: ranks 1..(K+2); output trimmed to ranks 1..K
+        return [N, N, min(N, elo_K + 2)]
+    # class: R3 competition = band (K-2)..(K+2) capped at N
+    a = max(1, elo_K - 2)
+    b = min(N, elo_K + 2)
+    return [N, N, b - a + 1]  # K when band is interior; ==N when band hits cap
 
 
 def _compute_return_band(N: int, elo_mode: str, elo_K: int) -> tuple[int, int]:
