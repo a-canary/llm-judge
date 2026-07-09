@@ -15,13 +15,18 @@ pip install -e .
 
 ## Run Tests
 
-```bash
-# Node.js tests
-node src/cli.js review --prompt 'Which essay is more informative?' test/fixtures/essay_a.md test/fixtures/essay_b.md
-node src/cli.js elo --prompt 'Which is more clearly written?' test/fixtures/essay_a.md test/fixtures/essay_b.md
-node src/cli.js gate --prompt 'Does this essay meet the quality bar?' test/fixtures/essay_a.md
+Two test directories, by language:
 
-# Python tests
+- `test/` — Node.js smoke fixtures (`test/fixtures/*.md`) consumed by the CLI smoke scripts in `package.json` (`npm test`, `npm run test:elo`, `npm run test:gate`). Not a unit-test tree.
+- `tests/` — pytest unit tests for the Python library code (`scripts/run_judge.py`, `references/elo.py`). Discovered by pytest from its default naming convention.
+
+```bash
+# Node.js CLI smoke (requires LLM API key)
+npm test
+npm run test:elo
+npm run test:gate
+
+# Python unit tests (no live LLM calls)
 pytest
 ```
 
