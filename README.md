@@ -202,15 +202,10 @@ Stored at `~/.cache/llm-judge/fifo_cache.json`, FIFO eviction at 512 entries.
 FAIL ❌
 ```
 
-## Hermes Skill Version
+## Hermes Skill
 
-This is the standalone open-source version. The **Hermes Agent skill** (`llm-judge` in the `productivity/` skill directory) includes additional documentation on:
-- Multi-version benchmark design (V1/V2/V3/V4 pattern)
-- Behavioral sycophancy evaluation rubric
-- Known HBR findings to encode in benchmarks
-- Integration with EA/evolutionary runs
-
-If you are running LLM Judge as a Hermes Agent tool, use the skill version for the full documentation.
+For use as a Hermes Agent skill, see `arc-skills/skills/llm-judge/` (the repo-local
+`SKILL_reference.md` was retired in #5; canonical location lives in arc-skills).
 
 ## License
 
