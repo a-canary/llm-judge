@@ -14,7 +14,7 @@ cd llm-judge
 # Python CLI — requires a virtual environment (Python packaging standard)
 python3 -m venv venv
 venv/bin/pip install -e .
-vllm-judge --help
+llm-judge --help
 
 # Node.js CLI (thin Python wrapper — same engine, node is the host)
 npm install -g .
