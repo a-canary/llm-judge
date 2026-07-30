@@ -85,15 +85,19 @@ def test_parse_gate_fallback_regex():
 def test_parse_gate_no_thinking_strip():
     """Gate callers do not strip <thinking> by default (strip_thinking=False).
 
-    If MiniMax ever injects a <thinking> block before a gate-style response, the
-    literal text will reach JSON parsing and the regex fallback will pick up the
-    score from inside the block. This test pins that intentional non-strip.
+    Pins the default by embedding a complete JSON payload INSIDE a <thinking>
+    block followed by a regex-style score. With strip_thinking=True the JSON
+    would parse first (score=2.0, failed); with the default strip_thinking=False
+    the JSON is malformed and regex picks up Score: 4.5. The two outputs are
+    distinguishable, so this test fails if the default ever flips.
     """
-    raw = '<thinking>model deliberation</thinking>Score: 4.5\nVerdict: pass'
+    raw = '<thinking>{"score": 2.0, "passed": false}</thinking>Score: 4.5\nVerdict: pass'
     r = parse_gate_result(raw)
-    # Default behavior: text is not stripped, so the JSON path fails and regex
-    # extracts "Score: 4.5" from the (now-still-present) thinking tag.
+    # Default strip_thinking=False: text is not stripped, JSON.parse fails on
+    # the leading "<thinking>" prefix, regex fallback extracts "Score: 4.5".
     assert abs(r["score"] - 4.5) < 0.01
+    # And the verdict came from regex fallback (truncated to 200 chars).
+    assert r["verdict"].startswith("<thinking>")
 
 
 # ---------------------------------------------------------------------------
