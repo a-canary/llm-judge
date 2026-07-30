@@ -13,6 +13,7 @@ sys.path.insert(0, SCRIPTS)
 from references.elo import FIFOCache, rank_swiss_elo, ArtifactElo
 from run_judge import (
     parse_pairwise_result,
+    parse_gate_result,
     validate_criteria,
     load_artifact,
 )
@@ -59,6 +60,40 @@ def test_parse_pairwise_fallback_defaults():
     assert r["a_score"] == 5.0
     assert r["b_score"] == 5.0
     assert r["winner"] in ("A", "B")
+
+
+# ---------------------------------------------------------------------------
+# parse_gate_result  (sibling of parse_pairwise — same helper, no thinking strip)
+# ---------------------------------------------------------------------------
+
+def test_parse_gate_clean_json():
+    raw = '{"score": 4.2, "passed": true, "verdict": "looks good"}'
+    r = parse_gate_result(raw)
+    assert r["score"] == 4.2
+    assert r["passed"] is True
+    assert r["verdict"] == "looks good"
+
+
+def test_parse_gate_fallback_regex():
+    """Fallback when JSON parse fails — regex extracts Score."""
+    raw = "Score: 3.8\nOverall: pass"
+    r = parse_gate_result(raw)
+    assert abs(r["score"] - 3.8) < 0.01
+    assert r["passed"] is True
+
+
+def test_parse_gate_no_thinking_strip():
+    """Gate callers do not strip <thinking> by default (strip_thinking=False).
+
+    If MiniMax ever injects a <thinking> block before a gate-style response, the
+    literal text will reach JSON parsing and the regex fallback will pick up the
+    score from inside the block. This test pins that intentional non-strip.
+    """
+    raw = '<thinking>model deliberation</thinking>Score: 4.5\nVerdict: pass'
+    r = parse_gate_result(raw)
+    # Default behavior: text is not stripped, so the JSON path fails and regex
+    # extracts "Score: 4.5" from the (now-still-present) thinking tag.
+    assert abs(r["score"] - 4.5) < 0.01
 
 
 # ---------------------------------------------------------------------------
