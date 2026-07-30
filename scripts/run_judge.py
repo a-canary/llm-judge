@@ -246,48 +246,67 @@ ARTIFACT:
 # Result parsers
 # ---------------------------------------------------------------------------
 
-def parse_pairwise_result(raw: str) -> dict:
-    # Strip MiniMax thinking blocks before parsing
-    # e.g. <thinking>...</thinking> injected by MiniMax model before JSON
-    cleaned = re.sub(r'<thinking>.*?</thinking>', '', raw, flags=re.DOTALL)
+def parse_json_with_fallback(
+    raw: str, json_fn, regex_fn, *, strip_thinking: bool = False
+) -> dict:
+    """Parse `raw` by trying JSON first, then falling back to a regex-based fn.
+
+    Both `parse_pairwise_result` and `parse_gate_result` share this exact
+    shape — try `json.loads`, swallow exceptions, regex-match instead — so
+    the scaffolding lives here and the two callers only ship the shape that
+    actually differs: which fields to extract on each path.
+
+    `strip_thinking` is true for pairwise because MiniMax injects
+    `<thinking>...</thinking>` blocks before its JSON; gate callers don't
+    see that pattern in practice, so the default keeps gate's text intact.
+    """
+    text = re.sub(r"<thinking>.*?</thinking>", "", raw, flags=re.DOTALL) if strip_thinking else raw
     try:
-        # Try JSON first (on cleaned text to skip thinking blocks)
-        data = json.loads(cleaned)
+        return json_fn(json.loads(text))
+    except Exception:
+        return regex_fn(text)
+
+
+def parse_pairwise_result(raw: str) -> dict:
+    def from_json(data):
         return {
             "a_score": float(data["a_score"]),
             "b_score": float(data["b_score"]),
             "winner": data["winner"].upper(),
             "reason": data.get("reason", ""),
         }
-    except Exception:
-        pass
-    # Fallback: regex on cleaned text
-    winner = None
-    for w in ("A", "B"):
-        if re.search(rf'\bWinner:\s*{w}\b', cleaned, re.IGNORECASE):
-            winner = w
-            break
-    scores = [float(s) for s in re.findall(r'Score[_ ]?[AB]?:\s*(\d+\.?\d*)', cleaned, re.IGNORECASE)]
-    a_score = scores[0] if len(scores) > 0 else 5.0
-    b_score = scores[1] if len(scores) > 1 else 5.0
-    winner = winner or ("A" if a_score > b_score else "B" if b_score > a_score else "A")
-    return {"a_score": a_score, "b_score": b_score, "winner": winner, "reason": cleaned[:200]}
+
+    def from_regex(cleaned):
+        winner = None
+        for w in ("A", "B"):
+            if re.search(rf"\bWinner:\s*{w}\b", cleaned, re.IGNORECASE):
+                winner = w
+                break
+        scores = [float(s) for s in re.findall(r"Score[_ ]?[AB]?:\s*(\d+\.?\d*)", cleaned, re.IGNORECASE)]
+        a_score = scores[0] if len(scores) > 0 else 5.0
+        b_score = scores[1] if len(scores) > 1 else 5.0
+        winner = winner or ("A" if a_score > b_score else "B" if b_score > a_score else "A")
+        return {"a_score": a_score, "b_score": b_score, "winner": winner, "reason": cleaned[:200]}
+
+    return parse_json_with_fallback(raw, from_json, from_regex, strip_thinking=True)
 
 
 def parse_gate_result(raw: str) -> dict:
-    try:
-        data = json.loads(raw)
+    def from_json(data):
         return {
             "score": float(data["score"]),
             "passed": bool(data.get("passed", float(data["score"]) >= 3.5)),
             "verdict": data.get("verdict", ""),
         }
-    except Exception:
-        score_match = re.search(r'Score:\s*(\d+\.?\d*)', raw, re.IGNORECASE)
+
+    def from_regex(text):
+        score_match = re.search(r"Score:\s*(\d+\.?\d*)", text, re.IGNORECASE)
         score = float(score_match.group(1)) if score_match else 3.0
-        passed = "pass" in raw.lower() or score >= 3.5
-        verdict = raw[:200]
+        passed = "pass" in text.lower() or score >= 3.5
+        verdict = text[:200]
         return {"score": score, "passed": passed, "verdict": verdict}
+
+    return parse_json_with_fallback(raw, from_json, from_regex)
 
 # ---------------------------------------------------------------------------
 # Mode: review
