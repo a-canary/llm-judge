@@ -14,6 +14,7 @@ import hashlib
 import json
 import os
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
@@ -36,6 +37,14 @@ from references.prompts import (
 )
 
 
+@dataclass
+class JudgeOpts:
+    """Call-shape options shared by every mode_* function (model/effort/provider/output)."""
+    model: str = "claude-sonnet-4-6"
+    effort: str = "high"
+    provider: str = "cli"
+    output: Optional[str] = None
+
 
 # ---------------------------------------------------------------------------
 # Output
@@ -56,20 +65,12 @@ def render_and_emit(text: str, output: Optional[str]) -> str:
 # ---------------------------------------------------------------------------
 
 
-def mode_review(
-    artifacts: list[dict],
-    criteria: dict,
-    task: str,
-    output: Optional[str],
-    model: str,
-    effort: str,
-    provider: str,
-) -> str:
+def mode_review(artifacts: list[dict], criteria: dict, task: str, opts: JudgeOpts) -> str:
     dims = criteria["dimensions"]
     lines = [f"# Review \u2014 {len(artifacts)} artifacts\n", f"**Task:** {task}\n"]
     for a in artifacts:
         prompt = build_critique_prompt(a, dims, task)
-        raw = call_claude(prompt, model=model, effort=effort, provider=provider)
+        raw = call_claude(prompt, model=opts.model, effort=opts.effort, provider=opts.provider)
         try:
             data = json.loads(raw)
             scores = data.get("scores", {})
@@ -82,7 +83,7 @@ def mode_review(
             lines.append(f"\n{feedback}\n")
         except Exception:
             lines.append(f"\n## {a['id']}\n\n{raw[:500]}\n")
-    return render_and_emit("\n".join(lines), output)
+    return render_and_emit("\n".join(lines), opts.output)
 
 
 # ---------------------------------------------------------------------------
@@ -90,20 +91,12 @@ def mode_review(
 # ---------------------------------------------------------------------------
 
 
-def mode_gate(
-    artifacts: list[dict],
-    criteria: dict,
-    task: str,
-    output: Optional[str],
-    model: str,
-    effort: str,
-    provider: str,
-) -> str:
+def mode_gate(artifacts: list[dict], criteria: dict, task: str, opts: JudgeOpts) -> str:
     dims = criteria["dimensions"]
     results = []
     for a in artifacts:
         prompt = build_gate_prompt(a, dims, task)
-        raw = call_claude(prompt, model=model, effort=effort, provider=provider)
+        raw = call_claude(prompt, model=opts.model, effort=opts.effort, provider=opts.provider)
         results.append({"id": a["id"], **parse_gate_result(raw)})
     all_passed = all(r["passed"] for r in results)
     lines = [f"# Gate Results\n", f"**Task:** {task}\n"]
@@ -111,7 +104,7 @@ def mode_gate(
         icon = "\u2705" if r["passed"] else "\u274c"
         lines.append(f"{icon} **{r['id']}** \u2014 {r['score']:.2f}/5 \u2014 {r['verdict']}")
     lines.append(f"\n**Overall: {'PASS \u2705' if all_passed else 'FAIL \u274c'}**")
-    return render_and_emit("\n".join(lines), output)
+    return render_and_emit("\n".join(lines), opts.output)
 
 
 # ---------------------------------------------------------------------------
@@ -119,26 +112,16 @@ def mode_gate(
 # ---------------------------------------------------------------------------
 
 
-def mode_elo(
-    artifacts: list[dict],
-    criteria: dict,
-    task: str,
-    output: Optional[str],
-    model: str,
-    effort: str,
-    provider: str,
-    elo_mode: str,
-    elo_K: int,
-    n_rounds: int,
-) -> str:
+def mode_elo(artifacts: list[dict], criteria: dict, task: str, opts: JudgeOpts,
+             elo_mode: str, elo_K: int, n_rounds: int) -> str:
     n = len(artifacts)
     dims_text = build_dimensions_text(criteria["dimensions"])
     dims_hash = hashlib.sha256(dims_text.encode()).hexdigest()[:12]
     cache = _elo.FIFOCache()
 
-    # Build id \u2192 content lookup from the input artifact dicts.
+    # Build id → content lookup from the input artifact dicts.
     # ArtifactElo (constructed inside rank_swiss_elo) only carries
-    # content_hash \u2014 we need the full content for the judge prompt.
+    # content_hash — we need the full content for the judge prompt.
     artifacts_by_id: dict[str, dict] = {a["id"]: a for a in artifacts}
 
     def compare_fn(
@@ -163,7 +146,7 @@ def mode_elo(
             criteria["dimensions"],
             task,
         )
-        raw = call_claude(prompt, model=model, effort=effort, provider=provider)
+        raw = call_claude(prompt, model=opts.model, effort=opts.effort, provider=opts.provider)
         result = parse_pairwise_result(raw)
         winner_key = result["winner"]
         normalized = {
@@ -191,7 +174,7 @@ def mode_elo(
     rounds_log = result["rounds_log"]
     cache_stats = cache.stats()
 
-    # Header \u2014 show narrowing info
+    # Header — show narrowing info
     narrowing_info = ""
     if elo_mode == "rank":
         narrowing_info = f" (sorted top-{elo_K}, R3 competes 1..{min(n, elo_K+2)})"
@@ -203,7 +186,7 @@ def mode_elo(
     lines = [
         f"# Elo Ranking \u2014 {len(ranked_ids)} of {n}{narrowing_info}\n",
         f"**Task:** {task}\n",
-        f"**Provider:** {provider} / {model} ({effort} effort)\n",
+        f"**Provider:** {opts.provider} / {opts.model} ({opts.effort} effort)\n",
         f"**Rounds:** {n_rounds}\n",
         f"**Cache:** {cache_stats['cached']} hits\n",
         "\n## Final Ranking\n",
@@ -224,7 +207,7 @@ def mode_elo(
                     f" \u2192 {m['winner']} | {m['reason'][:80]}"
                 )
 
-    return render_and_emit("\n".join(lines), output)
+    return render_and_emit("\n".join(lines), opts.output)
 
 
 # ---------------------------------------------------------------------------
@@ -321,21 +304,15 @@ Examples:
 
     # Load artifacts
     artifacts = load_artifacts(args.artifacts)
+    opts = JudgeOpts(model=args.model, effort=args.effort, provider=args.provider, output=args.output)
 
     # Dispatch
     if args.mode == "review":
-        mode_review(
-            artifacts, criteria, task, args.output, args.model, args.effort, args.provider
-        )
+        mode_review(artifacts, criteria, task, opts)
     elif args.mode == "gate":
-        mode_gate(
-            artifacts, criteria, task, args.output, args.model, args.effort, args.provider
-        )
+        mode_gate(artifacts, criteria, task, opts)
     elif args.mode == "elo":
-        mode_elo(
-            artifacts, criteria, task, args.output, args.model, args.effort,
-            args.provider, elo_mode, elo_K, args.rounds,
-        )
+        mode_elo(artifacts, criteria, task, opts, elo_mode, elo_K, args.rounds)
 
 
 if __name__ == "__main__":

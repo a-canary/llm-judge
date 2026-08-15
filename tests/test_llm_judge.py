@@ -13,6 +13,7 @@ sys.path.insert(0, SCRIPTS)
 from references.elo import FIFOCache, rank_swiss_elo, ArtifactElo
 from run_judge import (
     parse_pairwise_result,
+    parse_gate_result,
     validate_criteria,
     load_artifact,
 )
@@ -59,6 +60,44 @@ def test_parse_pairwise_fallback_defaults():
     assert r["a_score"] == 5.0
     assert r["b_score"] == 5.0
     assert r["winner"] in ("A", "B")
+
+
+# ---------------------------------------------------------------------------
+# parse_gate_result  (sibling of parse_pairwise — same helper, no thinking strip)
+# ---------------------------------------------------------------------------
+
+def test_parse_gate_clean_json():
+    raw = '{"score": 4.2, "passed": true, "verdict": "looks good"}'
+    r = parse_gate_result(raw)
+    assert r["score"] == 4.2
+    assert r["passed"] is True
+    assert r["verdict"] == "looks good"
+
+
+def test_parse_gate_fallback_regex():
+    """Fallback when JSON parse fails — regex extracts Score."""
+    raw = "Score: 3.8\nOverall: pass"
+    r = parse_gate_result(raw)
+    assert abs(r["score"] - 3.8) < 0.01
+    assert r["passed"] is True
+
+
+def test_parse_gate_no_thinking_strip():
+    """Gate callers do not strip <thinking> by default (strip_thinking=False).
+
+    Pins the default by embedding a complete JSON payload INSIDE a <thinking>
+    block followed by a regex-style score. With strip_thinking=True the JSON
+    would parse first (score=2.0, failed); with the default strip_thinking=False
+    the JSON is malformed and regex picks up Score: 4.5. The two outputs are
+    distinguishable, so this test fails if the default ever flips.
+    """
+    raw = '<thinking>{"score": 2.0, "passed": false}</thinking>Score: 4.5\nVerdict: pass'
+    r = parse_gate_result(raw)
+    # Default strip_thinking=False: text is not stripped, JSON.parse fails on
+    # the leading "<thinking>" prefix, regex fallback extracts "Score: 4.5".
+    assert abs(r["score"] - 4.5) < 0.01
+    # And the verdict came from regex fallback (truncated to 200 chars).
+    assert r["verdict"].startswith("<thinking>")
 
 
 # ---------------------------------------------------------------------------
