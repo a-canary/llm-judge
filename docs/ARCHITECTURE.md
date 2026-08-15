@@ -11,7 +11,12 @@ llm-judge/
 │   └── test_judge.py       # Test harness with sleep-essay fixtures
 ├── references/
 │   ├── __init__.py         # Package marker
+│   ├── artifacts.py        # Artifact loading: files, inline text, URLs
+│   ├── caller.py           # LLM invocation: claude CLI + OpenAI-compat API
+│   ├── criteria.py         # Default criteria definitions + validation
 │   ├── elo.py              # Swiss Elo engine + FIFOCache
+│   ├── parsers.py          # Result parsers: pairwise, gate, review
+│   ├── prompts.py          # Prompt builders: pairwise, critique, gate
 │   ├── providers.py        # Cross-platform credential lookup
 │   └── criteria_template.md # Blank criteria JSON template
 └── docs/
@@ -19,9 +24,19 @@ llm-judge/
     └── CLI.md             # Full CLI reference
 ```
 
+## Module Responsibilities
+
+| Module | Responsibility |
+|--------|---------------|
+| `artifacts.py` | Load artifacts from file paths, inline:`TEXT`, or URLs; return normalized dict with id, content, content_hash
+| `caller.py` | Invoke LLM via `claude` CLI binary or OpenAI-compatible HTTP POST; returns raw text response
+| `criteria.py` | Default 5-dimension criteria (Correctness 30%, Completeness 25%, Clarity 20%, Maintainability 15%, EdgeCases 10%) + `validate_criteria()`
+| `parsers.py` | Parse raw LLM output into structured dicts; strip `<thinking>` blocks before JSON parse; fall back to regex
+| `prompts.py` | Build prompt strings for pairwise comparison, critique review, and gate evaluation
+
 ## Provider Abstraction
 
-`call_claude()` in `run_judge.py` dispatches to the configured provider:
+`call_claude()` in `caller.py` dispatches to the configured provider:
 
 | Provider | Transport | Model |
 |----------|-----------|-------|
@@ -36,10 +51,13 @@ compare_fn(task, dims_hash, a_elo, b_elo, cache)
     ├─► cache.get(key)  ──► hit? return cached result
     │
     └─► cache.miss:
-            call_claude(pairwise_prompt)
+            prompts.build_pairwise_prompt(a, b, dimensions, task)
                 │
                 ▼
-            parse_pairwise_result(raw_text)
+            caller.call_claude(prompt, model, effort, provider)
+                │
+                ▼
+            parsers.parse_pairwise_result(raw_text)
                 │
                 ▼
             cache.set(key, result)
