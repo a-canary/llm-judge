@@ -80,7 +80,7 @@ Cache persists at `~/.cache/llm-judge/fifo_cache.json` by default; `FIFOCache(pa
 - `FIFOCache(max_size=512, path=None)` - `path` defaults to `CACHE_PATH`; pass one to isolate the backing file
 - `get(task, dims_hash, a_id, a_hash, b_id, b_hash)` → `dict | None`
 - `set(...)` → stores result, evicts oldest if over capacity
-- `stats()` → `{"cached": N, "max": 512}`
+- `stats()` → `{"cached": N, "max": 512}` — `cached` is the number of stored entries, not a hit count
 
 ### compare_fn contract
 `compare_fn(a: ArtifactElo, b: ArtifactElo)` returns a `dict` with keys `a_score`, `b_score`, `winner` (`"A"`/`"B"`/anything else = draw), `reason`.

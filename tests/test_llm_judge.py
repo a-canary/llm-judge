@@ -420,3 +420,22 @@ def test_rank_swiss_elo_no_repeat_pairings():
             pair_key = frozenset({pair["a"], pair["b"]})
             assert pair_key not in seen_pairs, f"Repeat pairing: {pair}"
             seen_pairs.add(pair_key)
+
+
+def test_v1_cache_entries_are_ignored():
+    """A pre-v2 entry is a miss, not a silent A-win.
+
+    v1 keys had no version prefix and stored win/draw flags with no "winner",
+    which the engine scored as an A-win on every hit. Rather than pin the v2
+    hash constant, this rebuilds a v1 key the old way and asserts it misses.
+    """
+    import hashlib
+    cache, path = _fresh_cache()
+    try:
+        pair = "a:hhhhhhhh|b:hhhhhhhh"
+        v1_key = hashlib.sha256(f"t:d:{pair}".encode()).hexdigest()
+        cache._data[v1_key] = {"a_wins": True, "draw": False}
+        assert cache.get("t", "d", "a", "hhhhhhhh", "b", "hhhhhhhh") is None
+    finally:
+        if path.exists():
+            path.unlink()
