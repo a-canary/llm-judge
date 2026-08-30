@@ -40,7 +40,6 @@ from pathlib import Path
 from typing import Optional
 
 CACHE_PATH = Path.home() / ".cache" / "llm-judge" / "fifo_cache.json"
-CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
 CACHE_MAX = 512
 K_FACTOR = 32
 INITIAL_ELO = 1500
@@ -50,28 +49,31 @@ INITIAL_ELO = 1500
 # FIFO Cache
 # ---------------------------------------------------------------------------
 
-def _load_cache() -> dict:
-    if CACHE_PATH.exists():
-        try:
-            return json.loads(CACHE_PATH.read_text())
-        except Exception:
-            pass
-    return {}
-
-
-def _save_cache(data: dict) -> None:
-    CACHE_PATH.write_text(json.dumps(data, indent=2))
-
-
 class FIFOCache:
     """
     Simple FIFO cache keyed by sha256(task+dims+ids+hashes).
     Prevents duplicate Opus calls for identical comparison requests.
+
+    The backing file is per-instance (`path`), not a module global — tests and
+    concurrent runs can point at their own file without patching the module.
     """
 
-    def __init__(self, max_size: int = CACHE_MAX):
-        self._data: OrderedDict = OrderedDict(_load_cache())
+    def __init__(self, max_size: int = CACHE_MAX, path: Optional[Path] = None):
+        self._path = Path(path) if path is not None else CACHE_PATH
+        self._data: OrderedDict = OrderedDict(self._load())
         self._max = max_size
+
+    def _load(self) -> dict:
+        if self._path.exists():
+            try:
+                return json.loads(self._path.read_text())
+            except Exception:
+                pass
+        return {}
+
+    def _save(self) -> None:
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        self._path.write_text(json.dumps(dict(self._data), indent=2))
 
     def _make_key(self, task: str, dims_hash: str,
                   a_id: str, a_hash: str,
@@ -81,7 +83,10 @@ class FIFOCache:
             pair = f"{a_id}:{a_hash[:8]}|{b_id}:{b_hash[:8]}"
         else:
             pair = f"{b_id}:{b_hash[:8]}|{a_id}:{a_hash[:8]}"
-        return hashlib.sha256(f"{task}:{dims_hash}:{pair}".encode()).hexdigest()
+        # v2: pre-v2 entries stored win/draw flags but no "winner" key, so the
+        # engine silently scored every cache hit as an A-win. Namespacing the key
+        # retires those entries instead of trusting them.
+        return hashlib.sha256(f"v2:{task}:{dims_hash}:{pair}".encode()).hexdigest()
 
     def get(self, task: str, dims_hash: str,
             a_id: str, a_hash: str,
@@ -101,7 +106,7 @@ class FIFOCache:
         self._data.move_to_end(key)
         if len(self._data) > self._max:
             self._data.popitem(last=False)   # evict oldest
-        _save_cache(dict(self._data))
+        self._save()
 
     def stats(self) -> dict:
         return {"cached": len(self._data), "max": self._max}
@@ -195,7 +200,7 @@ def rank_swiss_elo(
     task: str,
     dims_hash: str,
     cache: FIFOCache,
-    compare_fn,
+    compare_fn,   # (a: ArtifactElo, b: ArtifactElo) -> dict, called only on cache miss
     past_elos: Optional[dict[str, float]] = None,
     n_rounds: int = 3,
     elo_mode: str = "all",   # "all" | "rank" | "class"
@@ -215,6 +220,10 @@ def rank_swiss_elo(
                R3 competes ranks 1..b; output trimmed to ranks 1..K
       class → [N, N, K] where band = (K-2)..(K+2), capped at N
                R3 competes K items; output trimmed to ranks 1..K
+
+    Caching: the engine owns it. Every pairing is looked up in `cache` first;
+    `compare_fn(a, b)` is invoked only on a miss and its result is stored.
+    Callers supply a pure judge call and never touch cache keys.
 
     Invariants:
       - No repeat pairings across all rounds (tracked via frozenset of seen pairs)
@@ -270,7 +279,12 @@ def rank_swiss_elo(
             paired_ids.add(a.id)
             paired_ids.add(b.id)
 
-            result = compare_fn(task, dims_hash, a, b, cache)
+            result = cache.get(task, dims_hash, a.id, a.content_hash,
+                               b.id, b.content_hash)
+            if result is None:
+                result = compare_fn(a, b)
+                cache.set(task, dims_hash, a.id, a.content_hash,
+                          b.id, b.content_hash, result)
             a_score = float(result.get("a_score", 3.0))
             b_score = float(result.get("b_score", 3.0))
             winner = result.get("winner", "A")

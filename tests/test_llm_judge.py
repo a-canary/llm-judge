@@ -6,17 +6,14 @@ import os
 
 # Enable package-style imports from project root
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SCRIPTS = os.path.join(ROOT, "scripts")
 sys.path.insert(0, ROOT)
-sys.path.insert(0, SCRIPTS)
 
+# Import from the owning modules, not through run_judge's re-exports — the CLI
+# is a composition root, not an API surface.
+from references.artifacts import load_artifact
+from references.criteria import validate_criteria
 from references.elo import FIFOCache, rank_swiss_elo, ArtifactElo
-from run_judge import (
-    parse_pairwise_result,
-    parse_gate_result,
-    validate_criteria,
-    load_artifact,
-)
+from references.parsers import parse_gate_result, parse_pairwise_result
 
 
 # ---------------------------------------------------------------------------
@@ -153,12 +150,8 @@ def test_load_artifact_content_hash_stable():
 def _fresh_cache(max_size=128):
     """Create a FIFOCache with an isolated temp backing file."""
     from references import elo as em
-    old = em.CACHE_PATH
-    path = old.parent / f"_test_cache_{os.getpid()}_{id(object())}.json"
-    em.CACHE_PATH = path
-    cache = FIFOCache(max_size=max_size)
-    em.CACHE_PATH = old
-    return cache, path
+    path = em.CACHE_PATH.parent / f"_test_cache_{os.getpid()}_{id(object())}.json"
+    return FIFOCache(max_size=max_size, path=path), path
 
 
 def test_fifo_cache_miss_returns_none():
@@ -212,7 +205,7 @@ def test_fifo_cache_symmetry():
 def test_rank_swiss_elo_returns_correct_keys():
     cache = FIFOCache()
 
-    def compare_fn(task, dims_hash, a, b, cache):
+    def compare_fn(a, b):
         return {"a_score": 3.0, "b_score": 4.0, "winner": "B", "reason": "test"}
 
     artifacts = [
@@ -229,7 +222,7 @@ def test_rank_swiss_elo_returns_correct_keys():
 def test_rank_swiss_elo_ranked_is_list_of_ids():
     cache = FIFOCache()
 
-    def compare_fn(task, dims_hash, a, b, cache):
+    def compare_fn(a, b):
         return {"a_score": 3.0, "b_score": 4.0, "winner": "B", "reason": "test"}
 
     artifacts = [
@@ -247,7 +240,7 @@ def test_rank_swiss_elo_bye_handling():
     """Odd number of artifacts — one gets a bye each round."""
     cache = FIFOCache()
 
-    def compare_fn(task, dims_hash, a, b, cache):
+    def compare_fn(a, b):
         return {"a_score": 3.0, "b_score": 4.0, "winner": "B", "reason": "test"}
 
     artifacts = [
@@ -265,7 +258,7 @@ def test_rank_swiss_elo_compare_fn_receives_artifact_elo_objects():
     cache = FIFOCache()
     received = []
 
-    def compare_fn(task, dims_hash, a, b, cache):
+    def compare_fn(a, b):
         received.append((type(a).__name__, type(b).__name__))
         return {"a_score": 3.0, "b_score": 4.0, "winner": "B", "reason": "test"}
 
@@ -278,7 +271,7 @@ def test_rank_swiss_elo_past_elos_respected():
     """Artifacts with prior Elo start there, not at 1500."""
     cache = FIFOCache()
 
-    def compare_fn(task, dims_hash, a, b, cache):
+    def compare_fn(a, b):
         return {"a_score": 3.0, "b_score": 4.0, "winner": "B", "reason": "test"}
 
     artifacts = [
@@ -297,7 +290,7 @@ def test_rank_swiss_elo_round_record_no_legacy_eliminated_key():
     narrowed-out artifacts are reported only via `byes`."""
     cache = FIFOCache()
 
-    def compare_fn(task, dims_hash, a, b, cache):
+    def compare_fn(a, b):
         return {"a_score": 3.0, "b_score": 4.0, "winner": "B", "reason": "test"}
 
     artifacts = [{"id": str(i), "content_hash": f"h{i}", "content": f"c{i}"} for i in range(6)]
@@ -311,11 +304,47 @@ def test_rank_swiss_elo_round_record_no_legacy_eliminated_key():
         )
 
 
+def test_rank_swiss_elo_engine_owns_cache():
+    """compare_fn is called only on a cache miss — the engine does get/set itself."""
+    cache, path = _fresh_cache(128)
+    try:
+        calls = []
+
+        def compare_fn(a, b):
+            calls.append((a.id, b.id))
+            return {"a_score": 4.0, "b_score": 3.0, "winner": "A", "reason": "r"}
+
+        artifacts = [{"id": f"a{i}", "content_hash": f"h{i}"} for i in range(4)]
+        rank_swiss_elo(artifacts, "task", "hash", cache, compare_fn, n_rounds=1)
+        first = len(calls)
+        assert first >= 1
+
+        # Second identical run: every pairing is already cached, so no new calls.
+        rank_swiss_elo(artifacts, "task", "hash", cache, compare_fn, n_rounds=1)
+        assert len(calls) == first
+    finally:
+        if path.exists():
+            path.unlink()
+
+
+def test_fifo_cache_does_not_touch_default_path():
+    """A cache given an explicit path never writes the shared ~/.cache file."""
+    from references import elo as em
+    cache, path = _fresh_cache(128)
+    try:
+        cache.set("t", "d", "a", "h", "b", "h", {"winner": "A"})
+        assert path.exists()
+        assert path != em.CACHE_PATH
+    finally:
+        if path.exists():
+            path.unlink()
+
+
 def test_rank_swiss_elo_no_repeat_pairings():
     """Same pair never meets twice across rounds."""
     cache = FIFOCache()
 
-    def compare_fn(task, dims_hash, a, b, cache):
+    def compare_fn(a, b):
         return {"a_score": 3.0, "b_score": 4.0, "winner": "B", "reason": "test"}
 
     artifacts = [{"id": str(i), "content_hash": f"h{i}", "content": f"c{i}"} for i in range(4)]

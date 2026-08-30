@@ -45,39 +45,46 @@ llm-judge/
 
 ## Cache Flow
 
-```
-compare_fn(task, dims_hash, a_elo, b_elo, cache)
-    │
-    ├─► cache.get(key)  ──► hit? return cached result
-    │
-    └─► cache.miss:
-            prompts.build_pairwise_prompt(a, b, dimensions, task)
-                │
-                ▼
-            caller.call_claude(prompt, model, effort, provider)
-                │
-                ▼
-            parsers.parse_pairwise_result(raw_text)
-                │
-                ▼
-            cache.set(key, result)
-                │
-                ▼
-            return result
+The **engine owns the cache**. `rank_swiss_elo` looks up every pairing itself and calls `compare_fn(a, b)` only on a miss, then stores the result.
+Callers supply a pure judge call and never construct cache keys.
 
-Cache key: sha256(f"{task}:{dims_hash}:{sorted_pair}:{hashes[:8]}")
+```
+rank_swiss_elo  (references/elo.py)
+    |
+    +-- cache.get(task, dims_hash, a.id, a.content_hash, b.id, b.content_hash)
+    |       `-- hit? use it, no LLM call
+    |
+    `-- miss:
+            compare_fn(a, b)          # supplied by the caller - pure judge call
+                |
+                +- prompts.build_pairwise_prompt(a, b, dimensions, task)
+                +- caller.call_claude(prompt, model, effort, provider)
+                `- parsers.parse_pairwise_result(raw_text)
+                |
+                v
+            cache.set(..., result)
+
+Cache key: sha256(f"v2:{task}:{dims_hash}:{sorted_pair}")
   - sorted_pair: (A,B) always sorted so (A,B) and (B,A) collide
-  - hashes: first 8 chars of content hash for each artifact
+  - pair segment embeds first 8 chars of each artifact's content hash
+  - "v2:" prefix retires pre-v2 entries, which stored win/draw flags but no
+    "winner" key and so were silently scored as A-wins on every cache hit
 ```
 
-FIFO eviction: when `len(cache) > 512`, oldest entry is removed. Cache persists at `~/.cache/llm-judge/fifo_cache.json`.
+FIFO eviction: when the cache exceeds 512 entries, the oldest is removed.
+Cache persists at `~/.cache/llm-judge/fifo_cache.json` by default; `FIFOCache(path=...)` overrides the backing file per instance (no module-global patching).
 
 ## Elo Engine (`references/elo.py`)
 
 ### FIFOCache
+- `FIFOCache(max_size=512, path=None)` - `path` defaults to `CACHE_PATH`; pass one to isolate the backing file
 - `get(task, dims_hash, a_id, a_hash, b_id, b_hash)` → `dict | None`
 - `set(...)` → stores result, evicts oldest if over capacity
 - `stats()` → `{"cached": N, "max": 512}`
+
+### compare_fn contract
+`compare_fn(a: ArtifactElo, b: ArtifactElo)` returns a `dict` with keys `a_score`, `b_score`, `winner` (`"A"`/`"B"`/anything else = draw), `reason`.
+Invoked only on a cache miss; it must not do its own caching.
 
 ### ArtifactElo
 ```python
