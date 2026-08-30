@@ -380,6 +380,18 @@ def test_missing_winner_scores_as_draw():
             path.unlink()
 
 
+def test_swiss_pairs_tiebreak_is_id_ascending():
+    """Equal Elo pairs in ascending id order.
+
+    Regression: the sort was `key=(elo, id), reverse=True`, which reversed the
+    id tiebreak too and paired ids descending, contradicting the docstring.
+    """
+    from references.elo import _swiss_pairs
+    arts = [ArtifactElo(id=i, content_hash="h") for i in ("c", "a", "d", "b")]
+    pairs = _swiss_pairs(arts, set())
+    assert [(x.id, y.id) for x, y in pairs] == [("a", "b"), ("c", "d")]
+
+
 def test_fifo_cache_does_not_touch_default_path():
     """A cache given an explicit path never writes the shared ~/.cache file."""
     from references import elo as em
