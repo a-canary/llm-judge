@@ -102,7 +102,8 @@ def mode_gate(artifacts: list[dict], criteria: dict, task: str, opts: JudgeOpts)
     for r in results:
         icon = "\u2705" if r["passed"] else "\u274c"
         lines.append(f"{icon} **{r['id']}** \u2014 {r['score']:.2f}/5 \u2014 {r['verdict']}")
-    lines.append(f"\n**Overall: {'PASS \u2705' if all_passed else 'FAIL \u274c'}**")
+    overall = "PASS \u2705" if all_passed else "FAIL \u274c"
+    lines.append(f"\n**Overall: {overall}**")
     return render_and_emit("\n".join(lines), opts.output)
 
 
