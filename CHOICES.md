@@ -100,6 +100,8 @@ docs/                  # Architecture + CLI reference
 
 - All criteria weights must sum to 1.0 (validated at runtime, hard error)
 - Cache key must be symmetric: (A,B) and (B,A) produce identical keys
+- The Elo engine owns caching: `rank_swiss_elo` does get/set, `compare_fn(a, b)` is a pure judge call
+- Cache key carries a version prefix; bump it whenever the stored result shape changes
 - Narrowing must never eliminate more artifacts than requested (K <= N invariant)
 - parse_pairwise_result must fall back to regex when JSON parse fails (no hard crash)
 - `--elo-rank` / `--elo-class` must be placed AFTER artifact paths (argparse nargs='*' greedy)

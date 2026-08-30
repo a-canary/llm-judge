@@ -154,16 +154,21 @@ run_judge.py (CLI entry point)
     └── elo mode
             │
             ▼
-        rank_swiss_elo()  ◄── compare_fn()
-            │                    │
-            │              call_claude()
-            │              build_pairwise_prompt()
-            │                    │
-            │                    ▼
-            │              Claude ──► parse_pairwise_result()
-            │                    │
-            ▼                    ▼
-        elo.py ───────────► FIFOCache (~/.cache/llm-judge/fifo_cache.json)
+        rank_swiss_elo()
+            │
+            ├──► FIFOCache (~/.cache/llm-judge/fifo_cache.json)
+            │       hit? done, no LLM call
+            │
+            └──► miss: compare_fn(a, b)
+                       │
+                       build_pairwise_prompt()
+                       call_claude()
+                       │
+                       ▼
+                       Claude ──► parse_pairwise_result()
+                       │
+                       ▼
+                    result cached by the engine
 ```
 
 ### Elo Algorithm
@@ -177,11 +182,15 @@ Elo update: `new = old + 32 × (actual − expected)`, where `expected = 1 / (1 
 
 ### Cache
 
-Never asks the judge the same question twice. Cache key:
+Never asks the judge the same question twice. The engine owns the cache —
+`rank_swiss_elo` looks up every pairing and calls `compare_fn(a, b)` only on a miss.
+Cache key:
 ```
-sha256(task + dims_hash + sorted_pair + content_hashes[:8])
+sha256("v2:" + task + dims_hash + sorted_pair + content_hashes[:8])
 ```
-Stored at `~/.cache/llm-judge/fifo_cache.json`, FIFO eviction at 512 entries.
+Stored at `~/.cache/llm-judge/fifo_cache.json` by default (`FIFOCache(path=...)` overrides
+it per instance), FIFO eviction at 512 entries. The `v2:` prefix retires entries written by
+an older key format instead of trusting them, so the first run after a bump re-judges everything.
 
 ## Output Examples
 

@@ -12,7 +12,6 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -25,8 +24,8 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 from references import elo as _elo
-from references.artifacts import load_artifact, load_artifacts
-from references.caller import DEFAULT_SYSTEM, call_claude
+from references.artifacts import load_artifacts
+from references.caller import call_claude
 from references.criteria import DEFAULT_CRITERIA, validate_criteria
 from references.parsers import parse_gate_result, parse_pairwise_result
 from references.prompts import (
@@ -103,7 +102,8 @@ def mode_gate(artifacts: list[dict], criteria: dict, task: str, opts: JudgeOpts)
     for r in results:
         icon = "\u2705" if r["passed"] else "\u274c"
         lines.append(f"{icon} **{r['id']}** \u2014 {r['score']:.2f}/5 \u2014 {r['verdict']}")
-    lines.append(f"\n**Overall: {'PASS \u2705' if all_passed else 'FAIL \u274c'}**")
+    overall = "PASS \u2705" if all_passed else "FAIL \u274c"
+    lines.append(f"\n**Overall: {overall}**")
     return render_and_emit("\n".join(lines), opts.output)
 
 
@@ -124,41 +124,16 @@ def mode_elo(artifacts: list[dict], criteria: dict, task: str, opts: JudgeOpts,
     # content_hash — we need the full content for the judge prompt.
     artifacts_by_id: dict[str, dict] = {a["id"]: a for a in artifacts}
 
-    def compare_fn(
-        task: str,
-        dims_hash: str,
-        a: _elo.ArtifactElo,
-        b: _elo.ArtifactElo,
-        cache: _elo.FIFOCache,
-    ) -> dict:
-        a_id = a.id
-        b_id = b.id
-        a_content = artifacts_by_id[a_id]["content"]
-        b_content = artifacts_by_id[b_id]["content"]
-        a_hash = a.content_hash
-        b_hash = b.content_hash
-        cached = cache.get(task, dims_hash, a_id, a_hash, b_id, b_hash)
-        if cached:
-            return cached
+    def compare_fn(a: _elo.ArtifactElo, b: _elo.ArtifactElo) -> dict:
+        """Judge one pairing. The engine handles caching — this always calls the LLM."""
         prompt = build_pairwise_prompt(
-            {"id": a_id, "content": a_content},
-            {"id": b_id, "content": b_content},
+            {"id": a.id, "content": artifacts_by_id[a.id]["content"]},
+            {"id": b.id, "content": artifacts_by_id[b.id]["content"]},
             criteria["dimensions"],
             task,
         )
         raw = call_claude(prompt, model=opts.model, effort=opts.effort, provider=opts.provider)
-        result = parse_pairwise_result(raw)
-        winner_key = result["winner"]
-        normalized = {
-            "a_wins": 1.0 if winner_key == "A" else 0.0,
-            "b_wins": 1.0 if winner_key == "B" else 0.0,
-            "draw": 1.0 if winner_key not in ("A", "B") else 0.0,
-            "a_score": result["a_score"],
-            "b_score": result["b_score"],
-            "reason": result["reason"],
-        }
-        cache.set(task, dims_hash, a_id, a_hash, b_id, b_hash, normalized)
-        return normalized
+        return parse_pairwise_result(raw)
 
     result = _elo.rank_swiss_elo(
         artifacts=artifacts,
@@ -188,7 +163,7 @@ def mode_elo(artifacts: list[dict], criteria: dict, task: str, opts: JudgeOpts,
         f"**Task:** {task}\n",
         f"**Provider:** {opts.provider} / {opts.model} ({opts.effort} effort)\n",
         f"**Rounds:** {n_rounds}\n",
-        f"**Cache:** {cache_stats['cached']} hits\n",
+        f"**Cache:** {cache_stats['cached']} entries\n",
         "\n## Final Ranking\n",
         "| Rank | Artifact       | Elo    | Matches |",
         "|------|----------------|--------|---------|",

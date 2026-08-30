@@ -3,20 +3,19 @@
 import json
 import sys
 import os
+import pathlib
+import tempfile
 
 # Enable package-style imports from project root
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SCRIPTS = os.path.join(ROOT, "scripts")
 sys.path.insert(0, ROOT)
-sys.path.insert(0, SCRIPTS)
 
+# Import from the owning modules, not through run_judge's re-exports — the CLI
+# is a composition root, not an API surface.
+from references.artifacts import load_artifact
+from references.criteria import validate_criteria
 from references.elo import FIFOCache, rank_swiss_elo, ArtifactElo
-from run_judge import (
-    parse_pairwise_result,
-    parse_gate_result,
-    validate_criteria,
-    load_artifact,
-)
+from references.parsers import parse_gate_result, parse_pairwise_result
 
 
 # ---------------------------------------------------------------------------
@@ -151,14 +150,14 @@ def test_load_artifact_content_hash_stable():
 # ---------------------------------------------------------------------------
 
 def _fresh_cache(max_size=128):
-    """Create a FIFOCache with an isolated temp backing file."""
-    from references import elo as em
-    old = em.CACHE_PATH
-    path = old.parent / f"_test_cache_{os.getpid()}_{id(object())}.json"
-    em.CACHE_PATH = path
-    cache = FIFOCache(max_size=max_size)
-    em.CACHE_PATH = old
-    return cache, path
+    """Create a FIFOCache with an isolated temp backing file.
+
+    Never the real ~/.cache/llm-judge/fifo_cache.json: rank_swiss_elo does its
+    own get/set, so a bare FIFOCache() in a test would read and write the
+    caller's live cache.
+    """
+    path = pathlib.Path(tempfile.mkdtemp(prefix="llm-judge-test-")) / "cache.json"
+    return FIFOCache(max_size=max_size, path=path), path
 
 
 def test_fifo_cache_miss_returns_none():
@@ -210,9 +209,9 @@ def test_fifo_cache_symmetry():
 # ---------------------------------------------------------------------------
 
 def test_rank_swiss_elo_returns_correct_keys():
-    cache = FIFOCache()
+    cache, _ = _fresh_cache()
 
-    def compare_fn(task, dims_hash, a, b, cache):
+    def compare_fn(a, b):
         return {"a_score": 3.0, "b_score": 4.0, "winner": "B", "reason": "test"}
 
     artifacts = [
@@ -227,9 +226,9 @@ def test_rank_swiss_elo_returns_correct_keys():
 
 
 def test_rank_swiss_elo_ranked_is_list_of_ids():
-    cache = FIFOCache()
+    cache, _ = _fresh_cache()
 
-    def compare_fn(task, dims_hash, a, b, cache):
+    def compare_fn(a, b):
         return {"a_score": 3.0, "b_score": 4.0, "winner": "B", "reason": "test"}
 
     artifacts = [
@@ -238,16 +237,17 @@ def test_rank_swiss_elo_ranked_is_list_of_ids():
         {"id": "c", "content_hash": "h3", "content": "ccc"},
     ]
     result = rank_swiss_elo(artifacts, "task", "hash", cache, compare_fn, n_rounds=1)
-    # b wins every match, so b first
-    assert result["ranked"] == ["b", "a", "c"]
+    # "winner": "B" means the second artifact of each pair wins, not the artifact
+    # named "b". Pairing is (a, b) with c on a bye, so b wins, c holds 1500, a loses.
+    assert result["ranked"] == ["b", "c", "a"]
     assert set(result["ranked"]) == {"a", "b", "c"}
 
 
 def test_rank_swiss_elo_bye_handling():
     """Odd number of artifacts — one gets a bye each round."""
-    cache = FIFOCache()
+    cache, _ = _fresh_cache()
 
-    def compare_fn(task, dims_hash, a, b, cache):
+    def compare_fn(a, b):
         return {"a_score": 3.0, "b_score": 4.0, "winner": "B", "reason": "test"}
 
     artifacts = [
@@ -262,10 +262,10 @@ def test_rank_swiss_elo_bye_handling():
 
 def test_rank_swiss_elo_compare_fn_receives_artifact_elo_objects():
     """compare_fn receives ArtifactElo objects, not id/elo/content tuples."""
-    cache = FIFOCache()
+    cache, _ = _fresh_cache()
     received = []
 
-    def compare_fn(task, dims_hash, a, b, cache):
+    def compare_fn(a, b):
         received.append((type(a).__name__, type(b).__name__))
         return {"a_score": 3.0, "b_score": 4.0, "winner": "B", "reason": "test"}
 
@@ -276,9 +276,9 @@ def test_rank_swiss_elo_compare_fn_receives_artifact_elo_objects():
 
 def test_rank_swiss_elo_past_elos_respected():
     """Artifacts with prior Elo start there, not at 1500."""
-    cache = FIFOCache()
+    cache, _ = _fresh_cache()
 
-    def compare_fn(task, dims_hash, a, b, cache):
+    def compare_fn(a, b):
         return {"a_score": 3.0, "b_score": 4.0, "winner": "B", "reason": "test"}
 
     artifacts = [
@@ -295,9 +295,9 @@ def test_rank_swiss_elo_past_elos_respected():
 def test_rank_swiss_elo_round_record_no_legacy_eliminated_key():
     """Architecture-hygiene: the dead `eliminated` field is no longer emitted;
     narrowed-out artifacts are reported only via `byes`."""
-    cache = FIFOCache()
+    cache, _ = _fresh_cache()
 
-    def compare_fn(task, dims_hash, a, b, cache):
+    def compare_fn(a, b):
         return {"a_score": 3.0, "b_score": 4.0, "winner": "B", "reason": "test"}
 
     artifacts = [{"id": str(i), "content_hash": f"h{i}", "content": f"c{i}"} for i in range(6)]
@@ -311,11 +311,105 @@ def test_rank_swiss_elo_round_record_no_legacy_eliminated_key():
         )
 
 
+def test_rank_swiss_elo_engine_owns_cache():
+    """compare_fn is called only on a cache miss — the engine does get/set itself."""
+    cache, path = _fresh_cache(128)
+    try:
+        calls = []
+
+        def compare_fn(a, b):
+            calls.append((a.id, b.id))
+            return {"a_score": 4.0, "b_score": 3.0, "winner": "A", "reason": "r"}
+
+        artifacts = [{"id": f"a{i}", "content_hash": f"h{i}"} for i in range(4)]
+        rank_swiss_elo(artifacts, "task", "hash", cache, compare_fn, n_rounds=1)
+        first = len(calls)
+        assert first >= 1
+
+        # Second identical run: every pairing is already cached, so no new calls.
+        rank_swiss_elo(artifacts, "task", "hash", cache, compare_fn, n_rounds=1)
+        assert len(calls) == first
+    finally:
+        if path.exists():
+            path.unlink()
+
+
+def test_cached_result_preserves_winner():
+    """A cached B-win scores as a B-win on replay.
+
+    Regression: the pre-v2 cache stored win/draw flags but no "winner" key, and
+    the engine defaulted a missing winner to "A" — so every cache hit was
+    silently scored an A-win no matter what the judge actually said.
+    """
+    cache, path = _fresh_cache(128)
+    try:
+        artifacts = [{"id": "a", "content_hash": "h1"},
+                     {"id": "b", "content_hash": "h2"}]
+
+        def compare_fn(a, b):
+            return {"a_score": 1.0, "b_score": 9.0, "winner": "B", "reason": "r"}
+
+        fresh = rank_swiss_elo(artifacts, "t", "d", cache, compare_fn, n_rounds=1)
+
+        def boom(a, b):
+            raise AssertionError("cache hit expected, judge must not be called")
+
+        replay = rank_swiss_elo(artifacts, "t", "d", cache, boom, n_rounds=1)
+        assert replay["ranked"] == fresh["ranked"]
+        assert replay["ranked"][0] == "b"
+    finally:
+        if path.exists():
+            path.unlink()
+
+
+def test_missing_winner_scores_as_draw():
+    """A result dict with no "winner" key is a draw, not a free A-win."""
+    cache, path = _fresh_cache(128)
+    try:
+        artifacts = [{"id": "a", "content_hash": "h1"},
+                     {"id": "b", "content_hash": "h2"}]
+
+        def compare_fn(a, b):
+            return {"a_score": 3.0, "b_score": 3.0, "reason": "r"}
+
+        result = rank_swiss_elo(artifacts, "t", "d", cache, compare_fn, n_rounds=1)
+        arts = result["artifacts"]
+        assert arts["a"]["elo"] == arts["b"]["elo"]
+    finally:
+        if path.exists():
+            path.unlink()
+
+
+def test_swiss_pairs_tiebreak_is_id_ascending():
+    """Equal Elo pairs in ascending id order.
+
+    Regression: the sort was `key=(elo, id), reverse=True`, which reversed the
+    id tiebreak too and paired ids descending, contradicting the docstring.
+    """
+    from references.elo import _swiss_pairs
+    arts = [ArtifactElo(id=i, content_hash="h") for i in ("c", "a", "d", "b")]
+    pairs = _swiss_pairs(arts, set())
+    assert [(x.id, y.id) for x, y in pairs] == [("a", "b"), ("c", "d")]
+
+
+def test_fifo_cache_does_not_touch_default_path():
+    """A cache given an explicit path never writes the shared ~/.cache file."""
+    from references import elo as em
+    cache, path = _fresh_cache(128)
+    try:
+        cache.set("t", "d", "a", "h", "b", "h", {"winner": "A"})
+        assert path.exists()
+        assert path != em.CACHE_PATH
+    finally:
+        if path.exists():
+            path.unlink()
+
+
 def test_rank_swiss_elo_no_repeat_pairings():
     """Same pair never meets twice across rounds."""
-    cache = FIFOCache()
+    cache, _ = _fresh_cache()
 
-    def compare_fn(task, dims_hash, a, b, cache):
+    def compare_fn(a, b):
         return {"a_score": 3.0, "b_score": 4.0, "winner": "B", "reason": "test"}
 
     artifacts = [{"id": str(i), "content_hash": f"h{i}", "content": f"c{i}"} for i in range(4)]
@@ -326,3 +420,22 @@ def test_rank_swiss_elo_no_repeat_pairings():
             pair_key = frozenset({pair["a"], pair["b"]})
             assert pair_key not in seen_pairs, f"Repeat pairing: {pair}"
             seen_pairs.add(pair_key)
+
+
+def test_v1_cache_entries_are_ignored():
+    """A pre-v2 entry is a miss, not a silent A-win.
+
+    v1 keys had no version prefix and stored win/draw flags with no "winner",
+    which the engine scored as an A-win on every hit. Rather than pin the v2
+    hash constant, this rebuilds a v1 key the old way and asserts it misses.
+    """
+    import hashlib
+    cache, path = _fresh_cache()
+    try:
+        pair = "a:hhhhhhhh|b:hhhhhhhh"
+        v1_key = hashlib.sha256(f"t:d:{pair}".encode()).hexdigest()
+        cache._data[v1_key] = {"a_wins": True, "draw": False}
+        assert cache.get("t", "d", "a", "hhhhhhhh", "b", "hhhhhhhh") is None
+    finally:
+        if path.exists():
+            path.unlink()
