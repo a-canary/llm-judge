@@ -129,6 +129,6 @@ class:[N, N, K]        — R3 competes ranks K-2..K+2, output 1..K (unsorted)
 | HTTP error / timeout | Print error, return `(5.0, 5.0)` (draw) |
 | JSON parse failure | Fall back to regex: `Winner: A/B` + score extraction |
 | MiniMax ` op ` thinking blocks | Strip with regex before JSON parse |
-| Cache miss | Call judge, cache result |
-| Cache hit | Return cached result silently |
+| Cache miss | Engine calls `compare_fn`, caches the result |
+| Cache hit | Engine returns the cached result; `compare_fn` is never called |
 | Empty artifact | Return error in result dict |
