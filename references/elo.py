@@ -166,8 +166,9 @@ def _swiss_pairs(
 
     This guarantees no repeat pairings and same-score artifacts stay adjacent.
     """
-    # Sort by Elo desc, then id asc for stable tiebreaking
-    unpaired = sorted(artifacts, key=lambda a: (a.elo, a.id), reverse=True)
+    # Sort by Elo desc, then id asc for stable tiebreaking. reverse=True would
+    # flip the id tiebreak too, so negate the Elo instead and leave id ascending.
+    unpaired = sorted(artifacts, key=lambda a: (-a.elo, a.id))
     pairs: list[tuple[ArtifactElo, ArtifactElo]] = []
 
     while unpaired:
@@ -287,7 +288,9 @@ def rank_swiss_elo(
                           b.id, b.content_hash, result)
             a_score = float(result.get("a_score", 3.0))
             b_score = float(result.get("b_score", 3.0))
-            winner = result.get("winner", "A")
+            # No "winner" key means the judge told us nothing -- score it a draw.
+            # Defaulting to "A" here is what made every pre-v2 cache hit an A-win.
+            winner = result.get("winner", "draw")
 
             # Map external "A"/"B"/"draw" labels into each artifact's local "me"/"opp"/"draw".
             a_winner, b_winner = _per_perspective_winners(winner)

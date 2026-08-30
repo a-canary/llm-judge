@@ -122,3 +122,4 @@ llm-judge elo \
 - **Narrowing with small N:** With N ≤ 10, narrowing eliminates artifacts after only 1-2 comparisons. Rankings may diverge significantly from a full run. Only use narrowing for N ≥ 20.
 
 - **Cache persistence:** The FIFO cache at `~/.cache/llm-judge/fifo_cache.json` persists across runs. Sequential calls with identical artifacts + prompt will return cached results. Clear the cache file to force re-evaluation.
+  Cache keys carry a version prefix (currently `v2:`). Entries written by an older version are unreachable rather than wrong, so the first run after a version bump re-judges every pairing at full cost; delete the file to reclaim the space.

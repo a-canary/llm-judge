@@ -86,6 +86,9 @@ Cache persists at `~/.cache/llm-judge/fifo_cache.json` by default; `FIFOCache(pa
 `compare_fn(a: ArtifactElo, b: ArtifactElo)` returns a `dict` with keys `a_score`, `b_score`, `winner` (`"A"`/`"B"`/anything else = draw), `reason`.
 Invoked only on a cache miss; it must not do its own caching.
 
+`winner` names a **slot, not an artifact id**: `"A"` means the first argument won, `"B"` the second. Which artifact lands in which slot is decided by `_swiss_pairs` (Elo desc, then id asc), not by the caller.
+A missing `winner` is scored a draw — an earlier `"A"` default is what made every pre-v2 cache hit an A-win.
+
 ### ArtifactElo
 ```python
 @dataclass
