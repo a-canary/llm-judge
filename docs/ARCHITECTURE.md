@@ -33,6 +33,8 @@ llm-judge/
 | `criteria.py` | Default 5-dimension criteria (Correctness 30%, Completeness 25%, Clarity 20%, Maintainability 15%, EdgeCases 10%) + `validate_criteria()`
 | `parsers.py` | Parse raw LLM output into structured dicts; strip `<thinking>` blocks before JSON parse; fall back to regex
 | `prompts.py` | Build prompt strings for pairwise comparison, critique review, and gate evaluation
+| `providers.py` | Resolve API base URL and look up the API key (env, then keyring, then pass)
+| `elo.py` | Swiss Elo tournament engine and persistent FIFO comparison cache
 
 ## Provider Abstraction
 
@@ -85,6 +87,7 @@ FIFO eviction: when `len(cache) > 512`, oldest entry is removed. Cache persists 
 class ArtifactElo:
     id: str
     content_hash: str
+    content: str = ""      # carried so compare_fn needs no id-to-content side-table
     elo: float = 1500.0
     matches: list[dict] = field(default_factory=list)
 
@@ -107,9 +110,10 @@ all:  [N, N, N]        — full competition every round
 rank: [N, N, K+2]      — R3 competes ranks 1..K+2, output 1..K
                            Best for EA: keep top K after breeding
                            (e.g. --elo-rank 8 with pop=16 → keep top 50%)
-class:[N, N, K]        — R3 competes ranks K-2..K+2, output 1..K (unsorted)
-                           Best for EA: select survivors without full sort
-                           (e.g. --elo-class 4 with pop=16 → 4 unsorted survivors)
+class:[N, N, K]        — R3 competes ranks K-2..K+2, output 1..K (by Elo)
+                           Best for EA: cheapest survivor cut - R3 only judges
+                           the band straddling the cut line
+                           (e.g. --elo-class 4 with pop=16 → 4 survivors)
 ```
 
 ## Error Handling

@@ -18,7 +18,8 @@ llm-judge --help
 
 # Node.js CLI (thin Python wrapper — same engine, node is the host)
 npm install -g .
-npm run test   # runs review + gate + elo against test/fixtures/
+npm test              # unit tests, no live LLM calls
+npm run demo:review   # live demo against test/fixtures/ (costs API calls)
 ```
 
 ### Credentials
@@ -54,7 +55,7 @@ llm-judge elo --elo-rank 3 --prompt "Find the top 3 essays" *.md
 # Best for EA: keep top 50% after breeding — e.g. K=8 when pop=16
 llm-judge elo --elo-rank 8 --prompt "Which essays have the strongest arguments?" *.md
 
-# Elo: pivot top K (narrows R3 to ranks K-2..K+2, returns top K unsorted)
+# Elo: pivot top K (narrows R3 to ranks K-2..K+2, returns top K)
 # Best for EA: select survivors without full sort — e.g. K=4 with pop=16 keeps 4 without ranking 1-4
 llm-judge elo --elo-class 4 --prompt "Select survivors without full sort" *.md
 ```

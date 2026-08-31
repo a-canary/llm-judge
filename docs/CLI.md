@@ -56,7 +56,7 @@ Output: Markdown table with final Elo rating and match count per artifact, plus 
 | `--criteria FILE` | Path to criteria JSON file | built-in generic |
 | `--criteria-text JSON` | Inline criteria as JSON string | built-in generic |
 | `--elo-rank K` | (elo) Sorted top-K: R3 competes ranks 1..K+2, eliminates rest | — |
-| `--elo-class K` | (elo) Pivot top-K: competes ranks K-2..K+2 — returns top K unsorted. Best for EA selection when you only need to eliminate the bottom N-K | — |
+| `--elo-class K` | (elo) Pivot top-K: competes ranks K-2..K+2 — returns top K by Elo. Best for EA selection when you only need to eliminate the bottom N-K | — |
 | `--rounds N` | (elo) Number of Swiss rounds | `3` |
 | `--output FILE` | Write output to file | stdout |
 

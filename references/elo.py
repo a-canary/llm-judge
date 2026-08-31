@@ -115,6 +115,7 @@ class FIFOCache:
 class ArtifactElo:
     id: str
     content_hash: str
+    content: str = ""
     elo: float = INITIAL_ELO
     matches: list[dict] = field(default_factory=list)   # record of each match
 
@@ -175,8 +176,6 @@ def _swiss_pairs(
             if pair_key not in seen_pairs:
                 partner = j
                 break
-            # Mark already-seen rejection so we don't try (a, b) again later
-            seen_pairs.add(pair_key)
 
         if partner is not None:
             b = unpaired.pop(partner)
@@ -229,6 +228,7 @@ def rank_swiss_elo(
         elo_map[a["id"]] = ArtifactElo(
             id=a["id"],
             content_hash=a["content_hash"],
+            content=a.get("content", ""),
             elo=prior if prior is not None else INITIAL_ELO,
         )
 

@@ -6,17 +6,12 @@ import os
 
 # Enable package-style imports from project root
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SCRIPTS = os.path.join(ROOT, "scripts")
 sys.path.insert(0, ROOT)
-sys.path.insert(0, SCRIPTS)
 
+from references.artifacts import load_artifact
+from references.criteria import validate_criteria
 from references.elo import FIFOCache, rank_swiss_elo, ArtifactElo
-from run_judge import (
-    parse_pairwise_result,
-    parse_gate_result,
-    validate_criteria,
-    load_artifact,
-)
+from references.parsers import parse_gate_result, parse_pairwise_result
 
 
 # ---------------------------------------------------------------------------
@@ -326,3 +321,20 @@ def test_rank_swiss_elo_no_repeat_pairings():
             pair_key = frozenset({pair["a"], pair["b"]})
             assert pair_key not in seen_pairs, f"Repeat pairing: {pair}"
             seen_pairs.add(pair_key)
+
+def test_rank_swiss_elo_compare_fn_receives_content():
+    """ArtifactElo carries content, so compare_fn needs no id->content side-table."""
+    cache = FIFOCache()
+    seen = {}
+
+    def compare_fn(task, dims_hash, a, b, cache):
+        seen[a.id] = a.content
+        seen[b.id] = b.content
+        return {"a_score": 3.0, "b_score": 4.0, "winner": "B", "reason": "test"}
+
+    artifacts = [
+        {"id": "a", "content_hash": "h1", "content": "aaa"},
+        {"id": "b", "content_hash": "h2", "content": "bbb"},
+    ]
+    rank_swiss_elo(artifacts, "task", "hash", cache, compare_fn, n_rounds=1)
+    assert seen == {"a": "aaa", "b": "bbb"}

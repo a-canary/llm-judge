@@ -12,7 +12,6 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -25,8 +24,8 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 from references import elo as _elo
-from references.artifacts import load_artifact, load_artifacts
-from references.caller import DEFAULT_SYSTEM, call_claude
+from references.artifacts import load_artifacts
+from references.caller import call_claude
 from references.criteria import DEFAULT_CRITERIA, validate_criteria
 from references.parsers import parse_gate_result, parse_pairwise_result
 from references.prompts import (
@@ -119,11 +118,6 @@ def mode_elo(artifacts: list[dict], criteria: dict, task: str, opts: JudgeOpts,
     dims_hash = hashlib.sha256(dims_text.encode()).hexdigest()[:12]
     cache = _elo.FIFOCache()
 
-    # Build id → content lookup from the input artifact dicts.
-    # ArtifactElo (constructed inside rank_swiss_elo) only carries
-    # content_hash — we need the full content for the judge prompt.
-    artifacts_by_id: dict[str, dict] = {a["id"]: a for a in artifacts}
-
     def compare_fn(
         task: str,
         dims_hash: str,
@@ -131,18 +125,12 @@ def mode_elo(artifacts: list[dict], criteria: dict, task: str, opts: JudgeOpts,
         b: _elo.ArtifactElo,
         cache: _elo.FIFOCache,
     ) -> dict:
-        a_id = a.id
-        b_id = b.id
-        a_content = artifacts_by_id[a_id]["content"]
-        b_content = artifacts_by_id[b_id]["content"]
-        a_hash = a.content_hash
-        b_hash = b.content_hash
-        cached = cache.get(task, dims_hash, a_id, a_hash, b_id, b_hash)
+        cached = cache.get(task, dims_hash, a.id, a.content_hash, b.id, b.content_hash)
         if cached:
             return cached
         prompt = build_pairwise_prompt(
-            {"id": a_id, "content": a_content},
-            {"id": b_id, "content": b_content},
+            {"id": a.id, "content": a.content},
+            {"id": b.id, "content": b.content},
             criteria["dimensions"],
             task,
         )
@@ -157,7 +145,7 @@ def mode_elo(artifacts: list[dict], criteria: dict, task: str, opts: JudgeOpts,
             "b_score": result["b_score"],
             "reason": result["reason"],
         }
-        cache.set(task, dims_hash, a_id, a_hash, b_id, b_hash, normalized)
+        cache.set(task, dims_hash, a.id, a.content_hash, b.id, b.content_hash, normalized)
         return normalized
 
     result = _elo.rank_swiss_elo(
@@ -266,7 +254,7 @@ Examples:
     parser.add_argument(
         "--elo-class",
         type=int,
-        help="Elo mode: pivot top-K. R3 competes ranks K-2..K+2, returns top K unsorted. Best for EA survivor selection without full sort.",
+        help="Elo mode: pivot top-K. R3 competes ranks K-2..K+2, returns top K. Best for EA survivor selection: cheaper than --elo-rank because R3 only judges the band around the cut line.",
     )
     parser.add_argument(
         "--rounds", type=int, default=3, help="Elo rounds [default: 3]"

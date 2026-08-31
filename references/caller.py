@@ -7,7 +7,6 @@ import os
 import shutil
 import subprocess
 import urllib.request
-from typing import Optional
 
 from references.providers import resolve_api_url as _resolve_api_url, get_api_key as _get_api_key
 

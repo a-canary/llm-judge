@@ -104,6 +104,9 @@ docs/                  # Architecture + CLI reference
 - parse_pairwise_result must fall back to regex when JSON parse fails (no hard crash)
 - `--elo-rank` / `--elo-class` must be placed AFTER artifact paths (argparse nargs='*' greedy)
 - Pipeliner module test suite must run without live LLM (mocked spawn)
+- Node shim must NOT override cwd — artifact paths are relative to the user's shell
+- `npm test` runs the offline pytest suite; live-LLM runs are `npm run demo:*`
+- Unit tests import from the owning `references/*` module, never re-exported via `run_judge`
 
 ---
 
