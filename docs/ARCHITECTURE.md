@@ -99,22 +99,30 @@ class ArtifactElo:
 ```
 
 ### Swiss Pairing (`_swiss_pairs`)
-1. Sort by (Elo desc, id asc) — stable tiebreaking
+1. Sort by (Elo desc, id asc) — stable tiebreaking (shared with band narrowing)
 2. Attempt adjacent pairs: (0,1), (2,3), ...
 3. For each proposed pair: if already seen in prior round, swap B with next unpaired artifact
 4. If no novel partner exists, first artifact gets a bye
 
 ### Narrowing Schedule
+Each round is scheduled as an inclusive 1-based **rank band** — the ranks that
+compete that round — not a bare count. A count could only ever mean "the top N",
+which cannot express `class` mode's band around the cut.
+
 ```
-all:  [N, N, N]        — full competition every round
-rank: [N, N, K+2]      — R3 competes ranks 1..K+2, output 1..K
-                           Best for EA: keep top K after breeding
-                           (e.g. --elo-rank 8 with pop=16 → keep top 50%)
-class:[N, N, K]        — R3 competes ranks K-2..K+2, output 1..K (by Elo)
-                           Best for EA: cheapest survivor cut - R3 only judges
-                           the band straddling the cut line
-                           (e.g. --elo-class 4 with pop=16 → 4 survivors)
+all:  [(1,N), (1,N), (1,N)]        — full competition every round
+rank: [(1,N), (1,N), (1,K+2)]      — R3 re-races ranks 1..K+2, output 1..K
+                                       Best for EA: keep top K after breeding
+                                       (e.g. --elo-rank 8 with pop=16 → top 50%)
+class:[(1,N), (1,N), (K-2,K+2)]    — R3 races only the band straddling the cut,
+                                       output 1..K (by Elo)
+                                       Best for EA: cheapest survivor cut
+                                       (e.g. --elo-class 4 with pop=16 → 4 survivors)
 ```
+
+Artifacts outside the round's band take a bye and keep their current Elo.
+`competing_band(N, mode, K)` is the single source of truth for the R3 band; the
+CLI header derives its "R3 competes a..b" line from it rather than recomputing.
 
 ## Error Handling
 

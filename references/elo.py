@@ -163,7 +163,7 @@ def _swiss_pairs(
     This guarantees no repeat pairings and same-score artifacts stay adjacent.
     """
     # Sort by Elo desc, then id asc for stable tiebreaking
-    unpaired = sorted(artifacts, key=lambda a: (a.elo, a.id), reverse=True)
+    unpaired = sorted(artifacts, key=lambda a: (-a.elo, a.id))
     pairs: list[tuple[ArtifactElo, ArtifactElo]] = []
 
     while unpaired:
@@ -208,12 +208,10 @@ def rank_swiss_elo(
       R2: all N compete (full Monrad, re-seeded with R1 Elos)
       R3: narrowed to a band around K (mode-dependent)
 
-    Modes:
-      all   → [N, N, N] — no narrowing, full ranking
-      rank  → [N, N, b] where b = min(N, K+2)
-               R3 competes ranks 1..b; output trimmed to ranks 1..K
-      class → [N, N, K] where band = (K-2)..(K+2), capped at N
-               R3 competes K items; output trimmed to ranks 1..K
+    Modes (R3 competing rank band; output always trimmed to ranks 1..K):
+      all   → (1, N)          — no narrowing, full ranking
+      rank  → (1, K+2)        — R3 re-races the leaders
+      class → (K-2, K+2)      — R3 races only the band straddling the cut
 
     Invariants:
       - No repeat pairings across all rounds (tracked via frozenset of seen pairs)
@@ -241,24 +239,21 @@ def rank_swiss_elo(
     return_band = _compute_return_band(N_arts, elo_mode, elo_K)
 
     for rnd in range(1, n_rounds + 1):
-        # Determine which artifacts are active this round
-        n_active = narrowing[rnd - 1]
+        # Determine which rank band competes this round
+        lo, hi = narrowing[rnd - 1]
         current = list(elo_map.values())
 
-        # Narrow: keep only the top n_active by Elo (stable sort by id for ties)
+        # Narrow to ranks lo..hi by Elo (stable sort by id for ties)
         sorted_all = sorted(current, key=lambda a: (-a.elo, a.id))
-        if n_active < len(current):
-            active_ids = {a.id for a in sorted_all[:n_active]}
-            # Artifacts outside the active set get a bye this round (no comparison)
-            initial_byes = [a.id for a in sorted_all[n_active:]]
-        else:
-            active_ids = {a.id for a in current}
-            initial_byes = []
+        band = sorted_all[lo - 1:hi]
+        active_ids = {a.id for a in band}
+        # Artifacts outside the band get a bye this round (no comparison)
+        initial_byes = [a.id for a in sorted_all if a.id not in active_ids]
         round_record: dict = {
             "round": rnd,
             "pairs": [],
             "byes": initial_byes,
-            "narrowed_to": n_active,
+            "competing_ranks": [lo, hi],
         }
 
         active_artifacts = [a for a in current if a.id in active_ids]
@@ -331,9 +326,16 @@ def _per_perspective_winners(winner: str) -> tuple[str, str]:
     return "draw", "draw"
 
 
-def _compute_narrowing_schedule(N: int, n_rounds: int, elo_mode: str, elo_K: int) -> list[int]:
+def _compute_narrowing_schedule(
+    N: int, n_rounds: int, elo_mode: str, elo_K: int
+) -> list[tuple[int, int]]:
     """
-    Compute how many artifacts compete in each round.
+    Compute which *rank band* competes in each round, as inclusive 1-based
+    (lo, hi) pairs.
+
+    A band -- not a count -- is the honest shape here: `class` mode's whole
+    reason to exist is that R3 judges only the ranks straddling the cut line,
+    which a bare "how many compete" integer cannot express.
 
     Fixed schedule (3-round):
       R1: all N (full Monrad)
@@ -341,29 +343,35 @@ def _compute_narrowing_schedule(N: int, n_rounds: int, elo_mode: str, elo_K: int
       R3: band determined by mode
 
     Modes:
-      all    → [N, N, N]            — no narrowing
-      rank   → [N, N, b]            — b = min(N, K+2)
-                  R3 competes ranks 1..b; output trimmed to ranks 1..K
-      class  → [N, N, b-a+1]        — band = (K-2)..(K+2), capped at N
-                  R3 competes that band; output trimmed to ranks 1..K
+      all    -> [(1,N), (1,N), (1,N)]          -- no narrowing
+      rank   -> [(1,N), (1,N), (1, K+2)]       -- R3 competes ranks 1..K+2
+      class  -> [(1,N), (1,N), (K-2, K+2)]     -- R3 competes only the cut band
 
     Examples:
-      N=20, rank K=5:  b=min(20,7)=7  → [20, 20, 7]
-      N=20, class K=5:  a=3, b=7      → [20, 20, 5]
-      N=4,  class K=5:  a=3, b=4      → [4, 4, 2]   (band capped to N)
+      N=20, rank  K=5: R3 band = (1, 7)   -- 7 artifacts compete
+      N=20, class K=5: R3 band = (3, 7)   -- 5 artifacts compete, around the cut
+      N=4,  class K=5: no narrowing (K >= N)
 
-    Returns list of int, one per round.
+    Returns one (lo, hi) band per round.
     """
+    full = (1, N)
     if elo_mode == "all" or elo_K >= N or n_rounds < 3:
-        return [N] * n_rounds
+        return [full] * n_rounds
 
     if elo_mode == "rank":
         # R3 competition: ranks 1..(K+2); output trimmed to ranks 1..K
-        return [N, N, min(N, elo_K + 2)]
-    # class: R3 competition = band (K-2)..(K+2) capped at N
-    a = max(1, elo_K - 2)
-    b = min(N, elo_K + 2)
-    return [N, N, b - a + 1]  # K when band is interior; ==N when band hits cap
+        return [full, full, (1, min(N, elo_K + 2))]
+    # class: R3 competes only the band straddling the cut at K
+    return [full, full, (max(1, elo_K - 2), min(N, elo_K + 2))]
+
+
+def competing_band(N: int, elo_mode: str, elo_K: int) -> tuple[int, int]:
+    """The inclusive 1-based rank band that competes in the final round.
+
+    Public because the CLI header reports it; deriving it here keeps the
+    reported band and the raced band from drifting apart.
+    """
+    return _compute_narrowing_schedule(N, 3, elo_mode, elo_K)[-1]
 
 
 def _compute_return_band(N: int, elo_mode: str, elo_K: int) -> tuple[int, int]:

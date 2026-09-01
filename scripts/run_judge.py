@@ -166,12 +166,10 @@ def mode_elo(artifacts: list[dict], criteria: dict, task: str, opts: JudgeOpts,
 
     # Header — show narrowing info
     narrowing_info = ""
-    if elo_mode == "rank":
-        narrowing_info = f" (sorted top-{elo_K}, R3 competes 1..{min(n, elo_K+2)})"
-    elif elo_mode == "class":
-        narrowing_info = (
-            f" (class {elo_K}, R3 competes {max(1, elo_K-2)}..{min(n, elo_K+2)})"
-        )
+    if elo_mode != "all" and elo_K < n:
+        lo, hi = _elo.competing_band(n, elo_mode, elo_K)
+        label = f"sorted top-{elo_K}" if elo_mode == "rank" else f"class {elo_K}"
+        narrowing_info = f" ({label}, R3 competes {lo}..{hi})"
 
     lines = [
         f"# Elo Ranking \u2014 {len(ranked_ids)} of {n}{narrowing_info}\n",
@@ -251,12 +249,12 @@ Examples:
     parser.add_argument(
         "--elo-rank",
         type=int,
-        help="Elo mode: sorted top-K. R3 competes ranks 1..K+2. Best for EA top-K selection.",
+        help="Elo mode: sorted top-K. R3 re-races ranks 1..K+2, output is ranks 1..K. Best for EA top-K selection.",
     )
     parser.add_argument(
         "--elo-class",
         type=int,
-        help="Elo mode: pivot top-K. R3 competes ranks K-2..K+2, returns top K. Best for EA survivor selection: cheaper than --elo-rank because R3 only judges the band around the cut line.",
+        help="Elo mode: pivot top-K. R3 races only ranks K-2..K+2 (the band straddling the cut), output is ranks 1..K. Best for EA survivor selection: cheaper than --elo-rank because fewer artifacts compete in R3.",
     )
     parser.add_argument(
         "--rounds", type=int, default=3, help="Elo rounds [default: 3]"

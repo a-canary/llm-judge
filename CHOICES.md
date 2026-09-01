@@ -67,7 +67,8 @@ docs/                  # Architecture + CLI reference
 ### Elo algorithm
 - 3-round Swiss Monrad (fixed schedule)
 - K-factor = 32, initial Elo = 1500
-- Narrowing schedule: [N, N, band] where band is mode-dependent
+- Narrowing schedule: one inclusive rank band (lo, hi) per round; R3's band is mode-dependent
+- `class` mode races the band straddling the cut (K-2..K+2), `rank` mode re-races the leaders (1..K+2)
 - No repeat pairings via frozenset tracking
 - Cache key: sha256(task + dims_hash + sorted_pair + content_hashes[:8])
 
@@ -101,6 +102,8 @@ docs/                  # Architecture + CLI reference
 - All criteria weights must sum to 1.0 (validated at runtime, hard error)
 - Cache key must be symmetric: (A,B) and (B,A) produce identical keys
 - Narrowing must never eliminate more artifacts than requested (K <= N invariant)
+- Elo seeding and band narrowing must use the same (Elo desc, id asc) tiebreak
+- `--elo-class K` must compete strictly fewer artifacts than `--elo-rank K` (that is its only reason to exist)
 - parse_pairwise_result must fall back to regex when JSON parse fails (no hard crash)
 - `--elo-rank` / `--elo-class` must be placed AFTER artifact paths (argparse nargs='*' greedy)
 - Pipeliner module test suite must run without live LLM (mocked spawn)

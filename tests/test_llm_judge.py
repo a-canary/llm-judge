@@ -10,7 +10,12 @@ sys.path.insert(0, ROOT)
 
 from references.artifacts import load_artifact
 from references.criteria import validate_criteria
-from references.elo import FIFOCache, rank_swiss_elo, ArtifactElo
+from references.elo import (
+    FIFOCache,
+    rank_swiss_elo,
+    ArtifactElo,
+    _compute_narrowing_schedule,
+)
 from references.parsers import parse_gate_result, parse_pairwise_result
 
 
@@ -233,9 +238,12 @@ def test_rank_swiss_elo_ranked_is_list_of_ids():
         {"id": "c", "content_hash": "h3", "content": "ccc"},
     ]
     result = rank_swiss_elo(artifacts, "task", "hash", cache, compare_fn, n_rounds=1)
-    # b wins every match, so b first
-    assert result["ranked"] == ["b", "a", "c"]
+    # Seeding is (Elo desc, id asc), so with all Elos tied at 1500 the pair is
+    # (a, b) and c byes. "B" always wins, so b tops and the loser a sinks below
+    # the untouched bye.
+    assert result["ranked"] == ["b", "c", "a"]
     assert set(result["ranked"]) == {"a", "b", "c"}
+    assert result["artifacts"]["c"]["elo"] == 1500  # bye is not scored
 
 
 def test_rank_swiss_elo_bye_handling():
@@ -338,3 +346,46 @@ def test_rank_swiss_elo_compare_fn_receives_content():
     ]
     rank_swiss_elo(artifacts, "task", "hash", cache, compare_fn, n_rounds=1)
     assert seen == {"a": "aaa", "b": "bbb"}
+
+
+def test_class_mode_r3_competes_the_cut_band_not_the_leaders():
+    """`--elo-class K` exists to be cheaper than `--elo-rank K` by racing only
+    the ranks straddling the cut. Regression guard: the schedule used to be a
+    bare count, which silently raced ranks 1..K (the leaders) instead."""
+    rank = _compute_narrowing_schedule(20, 3, "rank", 5)
+    klass = _compute_narrowing_schedule(20, 3, "class", 5)
+
+    assert rank[2] == (1, 7)     # leaders re-race
+    assert klass[2] == (3, 7)    # band straddles the cut at 5/6
+    # the point of class mode: strictly fewer comparisons than rank mode
+    def width(b):
+        return b[1] - b[0] + 1
+    assert width(klass[2]) < width(rank[2])
+
+
+def test_narrowing_bands_are_capped_and_disabled_when_K_exceeds_N():
+    assert _compute_narrowing_schedule(4, 3, "class", 5) == [(1, 4)] * 3   # K >= N
+    assert _compute_narrowing_schedule(6, 3, "class", 2) == [(1, 6), (1, 6), (1, 4)]
+    assert _compute_narrowing_schedule(6, 3, "all", 0) == [(1, 6)] * 3
+
+
+def test_class_mode_byes_the_artifacts_outside_the_cut_band():
+    """Artifacts above and below the R3 band both sit out that round."""
+    cache = FIFOCache()
+
+    def compare_fn(task, dims_hash, a, b, cache):
+        return {"a_score": 3.0, "b_score": 4.0, "winner": "B", "reason": "test"}
+
+    artifacts = [
+        {"id": f"a{i}", "content_hash": f"h{i}", "content": f"c{i}"} for i in range(8)
+    ]
+    result = rank_swiss_elo(
+        artifacts, "task", "hash", cache, compare_fn,
+        n_rounds=3, elo_mode="class", elo_K=4,
+    )
+    r3 = result["rounds_log"][2]
+    assert r3["competing_ranks"] == [2, 6]   # K-2 .. K+2
+    # ranks 1, 7, 8 sit out from narrowing; the 5-artifact band is odd, so one
+    # in-band artifact byes for lack of a partner too.
+    assert len(r3["byes"]) == 4
+    assert len(result["ranked"]) == 4        # output still trimmed to top K
