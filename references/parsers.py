@@ -20,31 +20,38 @@ def strip_thinking(raw: str) -> str:
     then poisons the regex fallback, which reads the scratchpad as if it were the
     verdict.
 
-    Scanned left to right so a block never spans text between two blocks: a payload
-    that merely mentions `<think>` followed by a real scratchpad must not have the
-    span between them swallowed. Only closed blocks are stripped -- an unclosed tag
-    is far more often a mention inside a payload than a truncated scratchpad, and a
-    genuinely truncated one still fails safe via the failed parse.
+    Tags are matched by DEPTH, so a nested block collapses into its outer block
+    rather than closing it early -- pairing an outer open with an inner close would
+    leave the outer block's tail (and any verdict in it) in the output.
+
+    Only balanced blocks are stripped: an unclosed tag is far more often a mention
+    inside a payload (`"verdict": "no <think> needed"`) than a truncated scratchpad,
+    and stripping to end-of-text would destroy valid output. A genuinely truncated
+    block still fails safe via the failed parse.
     """
+    tags = list(re.finditer(r"</?(?:thinking|think)>", raw, re.IGNORECASE))
+    spans, i = [], 0
+    while i < len(tags):
+        if tags[i].group().startswith("</"):
+            i += 1  # stray close: nothing is open, so there is no block to end
+            continue
+        # Walk forward tracking depth, so a nested block collapses into this one
+        # instead of closing it early and leaking the outer block's tail.
+        depth, j = 1, i + 1
+        while j < len(tags) and depth:
+            depth += -1 if tags[j].group().startswith("</") else 1
+            j += 1
+        if depth:
+            # Never closed: a mention inside a payload, not a scratchpad. Skip only
+            # this tag -- a later balanced block must still be strippable.
+            i += 1
+            continue
+        spans.append((tags[i].start(), tags[j - 1].end()))
+        i = j
     out, pos = [], 0
-    for m in re.finditer(r"<(?:thinking|think)>", raw, re.IGNORECASE):
-        if m.start() < pos:
-            continue
-        close = re.compile(r"</(?:thinking|think)>", re.IGNORECASE).search(raw, m.end())
-        if not close:
-            break
-        # Pair with the innermost open before this close: otherwise a payload
-        # mention would swallow everything up to a *later* block's closing tag.
-        inner = None
-        for nxt in re.finditer(r"<(?:thinking|think)>", raw[m.end():close.start()],
-                               re.IGNORECASE):
-            inner = m.end() + nxt.start()
-        if inner is not None:
-            out.append(raw[pos:inner])
-            pos = close.end()
-            continue
-        out.append(raw[pos:m.start()])
-        pos = close.end()
+    for start, end in spans:
+        out.append(raw[pos:start])
+        pos = end
     out.append(raw[pos:])
     return "".join(out)
 
@@ -119,39 +126,94 @@ def parse_gate_result(raw: str) -> dict:
             "scored": score_match is not None}
 
 
+# The vocabulary a judge actually uses to decide. Kept explicit and symmetric: an
+# affirmative the reader does not recognise is treated as no decision, which fails
+# closed, so a missing approval word blocks good artifacts until it is listed here.
+_AFFIRM = r'pass(?:ed)?|approve[ds]?|accept(?:ed)?|yes'
+_DENY = r'fail(?:ed|s)?|reject(?:ed|s)?|deny|denied|no'
+
 # The verdict word, optionally decorated (**PASS**, `FAIL`), alone in its span.
-_VERDICT_WORD = re.compile(r'^[\s*_`|]*(pass(?:ed)?|fail(?:ed)?|reject(?:ed)?)[\s*_`|.!]*$',
+_VERDICT_WORD = re.compile(r'^[\s*_`|]*(' + _AFFIRM + r'|' + _DENY + r')[\s*_`|.!]*$',
                            re.IGNORECASE)
 # The same word opening a labelled value, which may carry a trailing rationale
 # ("Verdict: PASS -- meets the bar"). Anchored at the start so the rationale can
 # never supply the decision.
-_VERDICT_LEAD = re.compile(r'^[\s*_`|]*(pass(?:ed)?|fail(?:ed)?|reject(?:ed)?)\b',
+_VERDICT_LEAD = re.compile(r'^[\s*_`|]*(' + _AFFIRM + r'|' + _DENY + r')\b',
                            re.IGNORECASE)
+# A qualifier after the verdict word withholds the approval it looks like it gives:
+# "PASS with reservations" is not a pass. Only rejections may be qualified.
+_HEDGE = re.compile(r'\b(with|pending|conditional|subject to|once|after|if|but|however|'
+                    r'provided|assuming|contingent|caveat)\b', re.IGNORECASE)
 _VERDICT_LABEL = re.compile(r'^[\s*_`|>#-]*(?:verdict|result|gate|status|decision|assessment)'
                             r'[\s*_`]*(?::|\|)[\s|]*(.+?)[\s|]*$', re.IGNORECASE)
+_FENCE = re.compile(r'^[\s>]*(?:```|~~~)')
+# A table row's final cell: a per-criterion verdict column decides row by row
+# ("| Clarity | PASS |"), so the last cell is a site even with no verdict label.
+_ROW_CELL = re.compile(r'^[\s>]*\|.*\|[\s>]*$')
+
+
+def _decision_lines(cleaned: str):
+    """Yield the lines that may carry a decision, skipping fenced code blocks.
+
+    A fenced block quotes an example ("respond like: Verdict: PASS"), never the
+    model's own verdict, so a decoy inside one must not get a vote.
+    """
+    fenced = False
+    for line in cleaned.splitlines():
+        if _FENCE.match(line):
+            fenced = not fenced
+            continue
+        if not fenced:
+            yield line
+
+
+def _verdict_of(value: str) -> Optional[bool]:
+    """Read a verdict word from the start of `value`, or None if it opens with none."""
+    word = _VERDICT_WORD.match(value) or _VERDICT_LEAD.match(value)
+    if not word:
+        return None
+    if not re.match(_AFFIRM + r'$', word.group(1), re.IGNORECASE):
+        return False
+    # An approval that carries a condition is a rejection until the condition is met.
+    return not _HEDGE.search(value[word.end(1):])
 
 
 def _gate_decision(cleaned: str) -> Optional[bool]:
-    """Return the gate's decision from its ONE decision site, or None if absent.
+    """Return the gate's decision, or None when the output states none.
 
-    Checks each line for a verdict label and reads only that line's value; falls
-    back to a line that is nothing but a verdict word. Returns None when neither
-    exists, so the caller can fail closed rather than guess from stray prose.
+    Reads EVERY decision site rather than the first, and any rejection dominates:
+    one response may cover several artifacts, or reject after quoting an approval,
+    and a gate that stops at the first site approves the whole batch on the
+    strength of its first line. A decision is a verdict-labelled line's value or a
+    line that is nothing but a verdict word; prose can never supply one.
+
+    Returns None when no site exists at all, so the caller fails closed rather
+    than guessing.
     """
-    lines = cleaned.splitlines()
-    for line in lines:
+    seen = None
+    for line in _decision_lines(cleaned):
         label = _VERDICT_LABEL.match(line)
         if label:
-            value = label.group(1)
-            # A markdown table row leaves the value padded with pipes. The word
-            # must open the value -- never merely appear inside its rationale.
-            word = _VERDICT_WORD.match(value) or _VERDICT_LEAD.match(value)
-            return word.group(1).lower().startswith("pass") if word else False
-    for line in lines:
-        word = _VERDICT_WORD.match(line)
-        if word:
-            return word.group(1).lower().startswith("pass")
-    return None
+            # A markdown header row ("| Criterion | Verdict |") matches the label but
+            # names a column instead of deciding -- it is not a site at all.
+            decision = _verdict_of(label.group(1))
+            if decision is None:
+                continue
+        elif _ROW_CELL.match(line):
+            cells = [c for c in line.strip().strip('>| ').split('|') if c.strip()]
+            # Only the last cell votes; earlier ones name the criterion being judged.
+            decision = _verdict_of(cells[-1].strip()) if cells else None
+            if decision is None:
+                continue
+        else:
+            word = _VERDICT_WORD.match(line)
+            if not word:
+                continue
+            decision = _verdict_of(line)
+        if decision is False:
+            return False
+        seen = True
+    return seen
 
 
 def parse_review_result(raw: str) -> dict:

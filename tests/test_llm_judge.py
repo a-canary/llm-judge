@@ -20,6 +20,7 @@ from references.elo import (
 )
 from references.parsers import (
     parse_gate_result,
+    strip_thinking,
     parse_pairwise_result,
     parse_review_result,
 )
@@ -488,6 +489,17 @@ GATE_MUST_BLOCK = [
     "Verdict: FAIL\n```\nPASS\n```",
     "The response was empty.",
     "<thinking>this would pass",
+    # Round 4: the decision is read from EVERY site, and any rejection dominates.
+    "Docstring example:\n```\nVerdict: PASS\n```\n\nAspirational.\n\nVerdict: FAIL",
+    "## Artifact A\nVerdict: PASS\n## Artifact B\nVerdict: FAIL",
+    "<think>a\n<think>redo</think>\nVerdict: PASS\n</think>\nVerdict: FAIL",
+    "Verdict: PASS WITH RESERVATIONS",
+    "Verdict: pass, conditional on fixing the leak",
+    "Verdict: PASS pending the security review",
+    "Verdict: PASS\nVerdict: FAIL",
+    "| Criterion | Verdict |\n|---|---|\n| Clarity | PASS |\n| Safety | FAIL |",
+    "Result: Rejected",
+    "Decision: no",
 ]
 
 GATE_MUST_PASS = [
@@ -505,6 +517,9 @@ GATE_MUST_PASS = [
     "| Verdict | PASS |",
     "Verdict: PASS\n\nThe artifact is clear and well-sourced.",
     "<thinking>hmm</thinking>Verdict: PASS",
+    "Result: Approved\nScore: 4.8", "Decision: accept", "Verdict: yes",
+    "| Criterion | Verdict |\n|---|---|\n| Clarity | PASS |",
+    "## Artifact A\nVerdict: PASS\n## Artifact B\nVerdict: PASS",
 ]
 
 
@@ -602,3 +617,19 @@ def test_parse_review_rejects_wrong_shaped_json():
     """Valid JSON that isn't a review must not surface as a real 0.00/5 score."""
     for raw in ('{"scores": {"Clarity": 4}}', '["not", "a", "review"]', '42'):
         assert parse_review_result(raw)["parsed"] is False, raw
+
+
+def test_strip_thinking_collapses_nested_blocks():
+    """A nested block must not close its parent early and leak the parent's tail."""
+    raw = "<think>a\n<think>inner</think>\nVerdict: PASS\n</think>\nVerdict: FAIL"
+    assert "PASS" not in strip_thinking(raw)
+
+
+def test_gate_ignores_verdict_quoted_in_fenced_block():
+    """A fenced example quotes the response format, it does not cast a vote."""
+    assert parse_gate_result("```\nVerdict: PASS\n```\nVerdict: FAIL")["passed"] is False
+
+
+def test_gate_rejection_dominates_across_artifacts():
+    """One response covering several artifacts fails if any one of them fails."""
+    assert parse_gate_result("A\nVerdict: PASS\nB\nVerdict: FAIL")["passed"] is False
