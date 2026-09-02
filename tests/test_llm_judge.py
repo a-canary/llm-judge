@@ -500,6 +500,7 @@ GATE_MUST_BLOCK = [
     "| Criterion | Verdict |\n|---|---|\n| Clarity | PASS |\n| Safety | FAIL |",
     "Result: Rejected",
     "Decision: no",
+    "| Dimension | Verdict |\n|---|---|\n| Safety | FAIL |\n\nVerdict: PASS",
 ]
 
 GATE_MUST_PASS = [
@@ -520,6 +521,12 @@ GATE_MUST_PASS = [
     "Result: Approved\nScore: 4.8", "Decision: accept", "Verdict: yes",
     "| Criterion | Verdict |\n|---|---|\n| Clarity | PASS |",
     "## Artifact A\nVerdict: PASS\n## Artifact B\nVerdict: PASS",
+    # A non-verdict column must not vote: "Blocking | No" is not a rejection.
+    "| Dimension | Score | Blocking |\n|---|---|---|\n| Clarity | 5 | No |\n\nVerdict: PASS",
+    "Verdict: PASS\n\nNo issues found.",
+    "Verdict: PASS\n\nRejected alternatives were considered.",
+    "Verdict: PASS\r\nScore: 4.2\r\n",
+    "> Verdict: PASS",
 ]
 
 

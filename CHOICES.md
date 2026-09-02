@@ -105,7 +105,8 @@ docs/                  # Architecture + CLI reference
 - Elo seeding and band narrowing must use the same (Elo desc, id asc) tiebreak
 - `--elo-class K` must compete strictly fewer artifacts than `--elo-rank K` (that is its only reason to exist)
 - parse_pairwise_result must fall back to regex when JSON parse fails (no hard crash)
-- The gate reads EVERY decision site and any rejection dominates: a verdict-labelled line, a lone verdict word, or a table row's last cell. Reading only the first site approves a whole multi-artifact batch on the strength of its opening line
+- The gate reads EVERY decision site and any rejection dominates: a verdict-labelled line, a lone verdict word, or a cell in a table's declared verdict column. Reading only the first site approves a whole multi-artifact batch on the strength of its opening line
+- A table cell votes only when the table's header names a verdict column; an arbitrary last column (`| Blocking | No |`) is not a verdict, and reading it as one blocks artifacts the judge approved
 - Prose is never a decision site — a scan for an affirmative-looking token is what let a FAIL verdict be overridden by "pass" appearing later in the rationale
 - A verdict quoted inside a fenced block is an example of the response format, not a vote, and is skipped
 - An approval carrying a qualifier ("PASS with reservations", "pass, conditional on...") is a rejection until the condition is met; only rejections may be qualified

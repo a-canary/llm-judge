@@ -147,9 +147,11 @@ _HEDGE = re.compile(r'\b(with|pending|conditional|subject to|once|after|if|but|h
 _VERDICT_LABEL = re.compile(r'^[\s*_`|>#-]*(?:verdict|result|gate|status|decision|assessment)'
                             r'[\s*_`]*(?::|\|)[\s|]*(.+?)[\s|]*$', re.IGNORECASE)
 _FENCE = re.compile(r'^[\s>]*(?:```|~~~)')
-# A table row's final cell: a per-criterion verdict column decides row by row
-# ("| Clarity | PASS |"), so the last cell is a site even with no verdict label.
+# A table row. Its cells only vote when the table declares a verdict column --
+# an arbitrary last column ("| Blocking |" holding "No") is not a verdict.
 _ROW_CELL = re.compile(r'^[\s>]*\|.*\|[\s>]*$')
+_VERDICT_HEAD = re.compile(r'^[\s*_`]*(?:verdict|result|gate|status|decision|assessment)'
+                           r'[\s*_`]*$', re.IGNORECASE)
 
 
 def _decision_lines(cleaned: str):
@@ -185,12 +187,13 @@ def _gate_decision(cleaned: str) -> Optional[bool]:
     one response may cover several artifacts, or reject after quoting an approval,
     and a gate that stops at the first site approves the whole batch on the
     strength of its first line. A decision is a verdict-labelled line's value or a
-    line that is nothing but a verdict word; prose can never supply one.
+    line that is nothing but a verdict word, or a cell in a declared verdict
+    column; prose can never supply one.
 
     Returns None when no site exists at all, so the caller fails closed rather
     than guessing.
     """
-    seen = None
+    seen, verdict_col = None, None
     for line in _decision_lines(cleaned):
         label = _VERDICT_LABEL.match(line)
         if label:
@@ -200,9 +203,17 @@ def _gate_decision(cleaned: str) -> Optional[bool]:
             if decision is None:
                 continue
         elif _ROW_CELL.match(line):
-            cells = [c for c in line.strip().strip('>| ').split('|') if c.strip()]
-            # Only the last cell votes; earlier ones name the criterion being judged.
-            decision = _verdict_of(cells[-1].strip()) if cells else None
+            cells = [c.strip() for c in line.strip().strip('>| ').split('|')]
+            heads = [i for i, c in enumerate(cells) if _VERDICT_HEAD.match(c)]
+            if heads:
+                # Header row: it names the verdict column rather than deciding.
+                verdict_col = heads[-1]
+                continue
+            # Only that column votes. Any other ("| Blocking | No |") is not a
+            # verdict, and reading it as one blocks artifacts the judge approved.
+            if verdict_col is None or verdict_col >= len(cells):
+                continue
+            decision = _verdict_of(cells[verdict_col])
             if decision is None:
                 continue
         else:
