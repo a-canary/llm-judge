@@ -31,7 +31,7 @@ llm-judge/
 | `artifacts.py` | Load artifacts from file paths, inline:`TEXT`, or URLs; return normalized dict with id, content, content_hash
 | `caller.py` | Invoke LLM via `claude` CLI binary or OpenAI-compatible HTTP POST; returns raw text response
 | `criteria.py` | Default 5-dimension criteria (Correctness 30%, Completeness 25%, Clarity 20%, Maintainability 15%, EdgeCases 10%) + `validate_criteria()`
-| `parsers.py` | Parse raw LLM output into structured dicts. `strip_thinking()` runs first in every parser — a verdict must never be read out of a reasoning model's scratchpad. `pairwise`/`gate` fall back to regex; `review` degrades to raw text (`parsed: False`) rather than inventing scores
+| `parsers.py` | Parse raw LLM output into structured dicts. `strip_thinking()` runs first in every parser — a verdict must never be read out of a reasoning model's scratchpad. `pairwise`/`gate` fall back to regex (the gate's fallback fails closed); `review` degrades to raw text (`parsed: False`) rather than inventing scores
 | `prompts.py` | Build prompt strings for pairwise comparison, critique review, and gate evaluation
 | `providers.py` | Resolve API base URL and look up the API key (env, then keyring, then pass). `resolve_api_url()` raises `ValueError` on a provider that is neither `cli` nor a URL
 | `elo.py` | Swiss Elo tournament engine and persistent FIFO comparison cache
@@ -130,9 +130,10 @@ CLI header derives its "R3 competes a..b" line from it rather than recomputing.
 |-----------|----------|
 | HTTP error / timeout | Print error, return `(5.0, 5.0)` (draw) |
 | JSON parse failure | Fall back to regex: `Winner: A/B` + score extraction |
-| MiniMax `<thinking>` blocks | `strip_thinking()` in every parser, before both the JSON and the regex path |
-| Unknown `--provider` value | `ValueError` naming the bad value (not an empty base URL) |
-| Unparseable review prose | `parsed: False` + raw text echoed; no fabricated scores |
+| Reasoning scratchpad (`<thinking>`, `<think>`) | `strip_thinking()` in every parser, before both the JSON and the regex path; case-insensitive, and an unclosed block strips to end-of-text |
+| Gate output with no affirmative verdict | Fails CLOSED (`passed: False`, `score: 0.0`) — a refusal, not an approval |
+| Unknown `--provider` value | `ValueError` naming the bad value; caught in `main()` → `error: …` + exit 1, before artifacts load |
+| Unparseable review prose, or JSON missing `scores`/`average` | `parsed: False` + raw text echoed; no fabricated scores |
 | Cache miss | Call judge, cache result |
 | Cache hit | Return cached result silently |
 | Empty artifact | Return error in result dict |

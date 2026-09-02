@@ -14,11 +14,14 @@ import re
 def strip_thinking(raw: str) -> str:
     """Remove reasoning-model <thinking> scratchpad blocks from raw output.
 
-    Reasoning providers (MiniMax et al.) wrap deliberation in <thinking>...</thinking>
-    before the real answer. Left in, it defeats the JSON parse and then poisons the
-    regex fallback, which reads the scratchpad as if it were the verdict.
+    Reasoning providers wrap deliberation in <thinking> (MiniMax) or <think>
+    (DeepSeek, Qwen) before the real answer. Left in, it defeats the JSON parse and
+    then poisons the regex fallback, which reads the scratchpad as if it were the
+    verdict. An unclosed block is treated as scratchpad to end-of-text: a truncated
+    response must not leak deliberation into a verdict.
     """
-    return re.sub(r"<thinking>.*?</thinking>", "", raw, flags=re.DOTALL)
+    return re.sub(r"<(thinking|think)>.*?(</\1>|$)", "", raw,
+                  flags=re.DOTALL | re.IGNORECASE)
 
 
 def parse_pairwise_result(raw: str) -> dict:
@@ -58,6 +61,12 @@ def parse_gate_result(raw: str) -> dict:
     """Parse gate evaluation output.
 
     Tries JSON first (on text with <thinking> blocks stripped), falls back to regex.
+
+    The regex path fails CLOSED: `passed` requires an affirmative "Verdict: PASS"
+    (or a parsed score over the bar), never the mere presence of the substring
+    "pass" -- which also appears in "does not pass". Unparseable prose is a
+    refusal, not an approval.
+
     Returns dict with score, passed, verdict.
     """
     cleaned = strip_thinking(raw)
@@ -70,8 +79,9 @@ def parse_gate_result(raw: str) -> dict:
         }
     except Exception:
         score_match = re.search(r'Score:\s*(\d+\.?\d*)', cleaned, re.IGNORECASE)
-        score = float(score_match.group(1)) if score_match else 3.0
-        passed = "pass" in cleaned.lower() or score >= 3.5
+        score = float(score_match.group(1)) if score_match else 0.0
+        affirmative = re.search(r'\bVerdict:\s*PASS\b', cleaned, re.IGNORECASE)
+        passed = bool(affirmative) or (score_match is not None and score >= 3.5)
         verdict = cleaned[:200]
         return {"score": score, "passed": passed, "verdict": verdict}
 
@@ -83,12 +93,16 @@ def parse_review_result(raw: str) -> dict:
     and gate there is no regex fallback -- a review is free-form prose, so a
     failed parse degrades to showing the raw text rather than guessing numbers.
 
-    Returns dict with scores, feedback, average, and parsed (False when the JSON
-    parse failed, in which case `raw` carries the unstructured response).
+    Returns dict with scores, feedback, average, and parsed. `parsed` is False
+    both when the JSON parse failed and when it succeeded on JSON that is not a
+    review payload -- a missing `average` must degrade to raw text, never render
+    as a real 0.00/5. In either case `raw` carries the unstructured response.
     """
     cleaned = strip_thinking(raw)
     try:
         data = json.loads(cleaned)
+        if not isinstance(data, dict) or not {"scores", "average"} <= data.keys():
+            raise ValueError("not a review payload")
         return {
             "scores": data.get("scores", {}),
             "feedback": data.get("feedback", ""),

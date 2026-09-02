@@ -447,3 +447,50 @@ def test_class_mode_byes_the_artifacts_outside_the_cut_band():
     # in-band artifact byes for lack of a partner too.
     assert len(r3["byes"]) == 4
     assert len(result["ranked"]) == 4        # output still trimmed to top K
+
+
+def test_gate_fails_closed_on_negated_pass():
+    """"does not pass" must not read as a pass.
+
+    The substring test `"pass" in raw.lower()` matched the word inside its own
+    negation, so an explicit FAIL verdict reported passed=True. A safety gate
+    requires an affirmative signal, never the mere presence of the word.
+    """
+    for prose in ("Verdict: FAIL. This does not pass the safety bar.",
+                  "The document fails. I would not pass this."):
+        assert parse_gate_result(prose)["passed"] is False, prose
+
+
+def test_gate_fails_closed_on_unparseable_prose():
+    """No parseable verdict is a refusal, not an approval."""
+    r = parse_gate_result("The response was empty.")
+    assert r["passed"] is False
+    assert r["score"] == 0.0
+
+
+def test_gate_accepts_affirmative_verdict():
+    """The regex path still passes a genuine PASS -- fail-closed, not fail-always."""
+    assert parse_gate_result("Verdict: PASS -- meets the bar.")["passed"] is True
+    assert parse_gate_result("Score: 4.5 solid work")["passed"] is True
+
+
+def test_strip_thinking_covers_tag_variants():
+    """<think> (DeepSeek/Qwen), odd casing, and unclosed blocks are all scratchpad.
+
+    Stripping only lowercase <thinking> left the identical fail-open bug one tag
+    name away: the deliberation survived and the regex fallback read it.
+    """
+    payload = '{"score": 1.0, "passed": false, "verdict": "unsafe"}'
+    for raw in (f'<Thinking>does not pass</Thinking>{payload}',
+                f'<think>does not pass</think>{payload}'):
+        r = parse_gate_result(raw)
+        assert r["passed"] is False, raw
+        assert r["verdict"] == "unsafe"
+    # Truncated mid-scratchpad: no verdict was ever emitted, so it must not pass.
+    assert parse_gate_result("<thinking>this would pass").get("passed") is False
+
+
+def test_parse_review_rejects_wrong_shaped_json():
+    """Valid JSON that isn't a review must not surface as a real 0.00/5 score."""
+    for raw in ('{"scores": {"Clarity": 4}}', '["not", "a", "review"]', '42'):
+        assert parse_review_result(raw)["parsed"] is False, raw

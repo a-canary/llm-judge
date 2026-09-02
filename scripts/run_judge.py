@@ -27,6 +27,7 @@ from references import elo as _elo
 from references.artifacts import load_artifacts
 from references.caller import call_claude
 from references.criteria import DEFAULT_CRITERIA, validate_criteria
+from references.providers import resolve_api_url
 from references.parsers import (
     parse_gate_result,
     parse_pairwise_result,
@@ -289,6 +290,13 @@ Examples:
     elif args.elo_class is not None:
         elo_mode = "class"
         elo_K = args.elo_class
+
+    # Validate the provider up front: a typo should fail before we load artifacts
+    # or spend a single API call, and as a message rather than a traceback.
+    try:
+        resolve_api_url(args.provider)
+    except ValueError as e:
+        sys.exit(f"error: {e}")
 
     # Load artifacts
     artifacts = load_artifacts(args.artifacts)
