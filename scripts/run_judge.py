@@ -27,7 +27,11 @@ from references import elo as _elo
 from references.artifacts import load_artifacts
 from references.caller import call_claude
 from references.criteria import DEFAULT_CRITERIA, validate_criteria
-from references.parsers import parse_gate_result, parse_pairwise_result
+from references.parsers import (
+    parse_gate_result,
+    parse_pairwise_result,
+    parse_review_result,
+)
 from references.prompts import (
     build_critique_prompt,
     build_dimensions_text,
@@ -70,18 +74,14 @@ def mode_review(artifacts: list[dict], criteria: dict, task: str, opts: JudgeOpt
     for a in artifacts:
         prompt = build_critique_prompt(a, dims, task)
         raw = call_claude(prompt, model=opts.model, effort=opts.effort, provider=opts.provider)
-        try:
-            data = json.loads(raw)
-            scores = data.get("scores", {})
-            feedback = data.get("feedback", "")
-            avg = data.get("average", 0)
-            lines.append(f"\n## {a['id']} \u2014 {avg:.2f}/5")
-            for d in dims:
-                s = scores.get(d["name"], "?")
-                lines.append(f"- **{d['name']}**: {s}/5")
-            lines.append(f"\n{feedback}\n")
-        except Exception:
-            lines.append(f"\n## {a['id']}\n\n{raw[:500]}\n")
+        review = parse_review_result(raw)
+        if not review["parsed"]:
+            lines.append(f"\n## {a['id']}\n\n{review['raw'][:500]}\n")
+            continue
+        lines.append(f"\n## {a['id']} \u2014 {review['average']:.2f}/5")
+        for d in dims:
+            lines.append(f"- **{d['name']}**: {review['scores'].get(d['name'], '?')}/5")
+        lines.append(f"\n{review['feedback']}\n")
     return render_and_emit("\n".join(lines), opts.output)
 
 

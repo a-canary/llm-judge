@@ -11,9 +11,13 @@ def resolve_api_url(provider_arg: str) -> str:
     """Resolve the API base URL.
 
     Priority:
-    1. LLM_JUDGE_API_BASE env var (pipeline-friendly, always wins)
-    2. provider_arg if it looks like a URL
-    3. "cli" if provider_arg is the literal string "cli"
+    1. "cli" if provider_arg is the literal string "cli"
+    2. LLM_JUDGE_API_BASE env var (pipeline-friendly, wins over an explicit URL)
+    3. provider_arg if it looks like a URL
+
+    Raises ValueError if provider_arg is neither "cli" nor a URL and no env base
+    is set -- a typo like --provider minmax must fail loudly here rather than
+    become an empty base URL that surfaces as a confusing "no API key" error.
     """
     if provider_arg == "cli":
         return "cli"
@@ -22,7 +26,11 @@ def resolve_api_url(provider_arg: str) -> str:
         return env_base
     if "://" in provider_arg:
         return provider_arg
-    return ""
+    raise ValueError(
+        f"Unknown provider {provider_arg!r}. Use \"cli\" for the claude CLI, or an "
+        "OpenAI-compatible base URL (e.g. https://api.minimax.io/v1). "
+        "Alternatively set LLM_JUDGE_API_BASE."
+    )
 
 
 def get_api_key(base_url: str) -> str:

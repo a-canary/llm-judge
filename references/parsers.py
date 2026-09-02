@@ -1,13 +1,24 @@
 """Result parsers for llm-judge: pairwise, gate, and review output parsers.
 
 All parsers accept raw LLM output text and return a normalized dict.
-MiniMax thinking blocks are stripped before parsing where relevant.
+Every parser strips reasoning-model <thinking> blocks first (see strip_thinking)
+-- a judge verdict must never be read out of the model's scratchpad.
 """
 
 from __future__ import annotations
 
 import json
 import re
+
+
+def strip_thinking(raw: str) -> str:
+    """Remove reasoning-model <thinking> scratchpad blocks from raw output.
+
+    Reasoning providers (MiniMax et al.) wrap deliberation in <thinking>...</thinking>
+    before the real answer. Left in, it defeats the JSON parse and then poisons the
+    regex fallback, which reads the scratchpad as if it were the verdict.
+    """
+    return re.sub(r"<thinking>.*?</thinking>", "", raw, flags=re.DOTALL)
 
 
 def parse_pairwise_result(raw: str) -> dict:
@@ -20,7 +31,7 @@ def parse_pairwise_result(raw: str) -> dict:
 
     Returns dict with a_score, b_score, winner, reason.
     """
-    cleaned = re.sub(r'<thinking>.*?</thinking>', '', raw, flags=re.DOTALL)
+    cleaned = strip_thinking(raw)
     try:
         data = json.loads(cleaned)
         return {
@@ -46,19 +57,45 @@ def parse_pairwise_result(raw: str) -> dict:
 def parse_gate_result(raw: str) -> dict:
     """Parse gate evaluation output.
 
-    Tries JSON first, falls back to regex.
+    Tries JSON first (on text with <thinking> blocks stripped), falls back to regex.
     Returns dict with score, passed, verdict.
     """
+    cleaned = strip_thinking(raw)
     try:
-        data = json.loads(raw)
+        data = json.loads(cleaned)
         return {
             "score": float(data["score"]),
             "passed": bool(data.get("passed", float(data["score"]) >= 3.5)),
             "verdict": data.get("verdict", ""),
         }
     except Exception:
-        score_match = re.search(r'Score:\s*(\d+\.?\d*)', raw, re.IGNORECASE)
+        score_match = re.search(r'Score:\s*(\d+\.?\d*)', cleaned, re.IGNORECASE)
         score = float(score_match.group(1)) if score_match else 3.0
-        passed = "pass" in raw.lower() or score >= 3.5
-        verdict = raw[:200]
+        passed = "pass" in cleaned.lower() or score >= 3.5
+        verdict = cleaned[:200]
         return {"score": score, "passed": passed, "verdict": verdict}
+
+
+def parse_review_result(raw: str) -> dict:
+    """Parse critique/review output into structured result.
+
+    Tries JSON first (on text with <thinking> blocks stripped). Unlike pairwise
+    and gate there is no regex fallback -- a review is free-form prose, so a
+    failed parse degrades to showing the raw text rather than guessing numbers.
+
+    Returns dict with scores, feedback, average, and parsed (False when the JSON
+    parse failed, in which case `raw` carries the unstructured response).
+    """
+    cleaned = strip_thinking(raw)
+    try:
+        data = json.loads(cleaned)
+        return {
+            "scores": data.get("scores", {}),
+            "feedback": data.get("feedback", ""),
+            "average": float(data.get("average", 0)),
+            "parsed": True,
+            "raw": cleaned,
+        }
+    except Exception:
+        return {"scores": {}, "feedback": "", "average": 0.0,
+                "parsed": False, "raw": cleaned}

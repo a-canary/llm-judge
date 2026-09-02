@@ -105,6 +105,9 @@ docs/                  # Architecture + CLI reference
 - Elo seeding and band narrowing must use the same (Elo desc, id asc) tiebreak
 - `--elo-class K` must compete strictly fewer artifacts than `--elo-rank K` (that is its only reason to exist)
 - parse_pairwise_result must fall back to regex when JSON parse fails (no hard crash)
+- Every parser must strip `<thinking>` before parsing — a gate must never fail OPEN by reading a "pass" out of a reasoning model's scratchpad
+- Unparseable review output degrades to raw text (`parsed: False`), never to fabricated scores
+- `--provider` that is neither `cli` nor a URL must raise, never resolve to an empty base URL
 - `--elo-rank` / `--elo-class` must be placed AFTER artifact paths (argparse nargs='*' greedy)
 - Pipeliner module test suite must run without live LLM (mocked spawn)
 - Node shim must NOT override cwd — artifact paths are relative to the user's shell

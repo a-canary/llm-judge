@@ -16,7 +16,12 @@ from references.elo import (
     ArtifactElo,
     _compute_narrowing_schedule,
 )
-from references.parsers import parse_gate_result, parse_pairwise_result
+from references.parsers import (
+    parse_gate_result,
+    parse_pairwise_result,
+    parse_review_result,
+)
+from references.providers import resolve_api_url
 
 
 # ---------------------------------------------------------------------------
@@ -63,7 +68,7 @@ def test_parse_pairwise_fallback_defaults():
 
 
 # ---------------------------------------------------------------------------
-# parse_gate_result  (sibling of parse_pairwise — same helper, no thinking strip)
+# parse_gate_result  (sibling of parse_pairwise — same thinking strip)
 # ---------------------------------------------------------------------------
 
 def test_parse_gate_clean_json():
@@ -82,22 +87,75 @@ def test_parse_gate_fallback_regex():
     assert r["passed"] is True
 
 
-def test_parse_gate_no_thinking_strip():
-    """Gate callers do not strip <thinking> by default (strip_thinking=False).
+def test_parse_gate_strips_thinking_before_verdict():
+    """A gate verdict must come from the answer, never the <thinking> scratchpad.
 
-    Pins the default by embedding a complete JSON payload INSIDE a <thinking>
-    block followed by a regex-style score. With strip_thinking=True the JSON
-    would parse first (score=2.0, failed); with the default strip_thinking=False
-    the JSON is malformed and regex picks up Score: 4.5. The two outputs are
-    distinguishable, so this test fails if the default ever flips.
+    Reasoning providers (MiniMax) wrap deliberation in <thinking>. Left in, the
+    JSON parse fails on the leading prefix and the regex fallback reads the
+    scratchpad -- which fails OPEN: an explicit {"passed": false} is reported as
+    a pass because the word "pass" appears in the deliberation.
     """
-    raw = '<thinking>{"score": 2.0, "passed": false}</thinking>Score: 4.5\nVerdict: pass'
+    raw = ('<thinking>The artifact does not pass the safety bar.</thinking>'
+           '{"score": 1.0, "passed": false, "verdict": "unsafe"}')
     r = parse_gate_result(raw)
-    # Default strip_thinking=False: text is not stripped, JSON.parse fails on
-    # the leading "<thinking>" prefix, regex fallback extracts "Score: 4.5".
+    assert r["passed"] is False
+    assert abs(r["score"] - 1.0) < 0.01
+    assert r["verdict"] == "unsafe"
+
+
+def test_parse_gate_strips_thinking_in_regex_fallback():
+    """Strip applies to the regex path too, not just the JSON path."""
+    r = parse_gate_result('<thinking>Score: 1.0 is my draft</thinking>Score: 4.5\nVerdict: pass')
     assert abs(r["score"] - 4.5) < 0.01
-    # And the verdict came from regex fallback (truncated to 200 chars).
-    assert r["verdict"].startswith("<thinking>")
+    assert not r["verdict"].startswith("<thinking>")
+
+
+# ---------------------------------------------------------------------------
+# parse_review_result
+# ---------------------------------------------------------------------------
+
+def test_parse_review_clean_json():
+    raw = '{"scores": {"Clarity": 4}, "feedback": "solid", "average": 4.0}'
+    r = parse_review_result(raw)
+    assert r["parsed"] is True
+    assert r["scores"]["Clarity"] == 4
+    assert r["feedback"] == "solid"
+    assert abs(r["average"] - 4.0) < 0.01
+
+
+def test_parse_review_strips_thinking():
+    raw = '<thinking>weighing it up</thinking>{"scores": {}, "feedback": "ok", "average": 3.0}'
+    r = parse_review_result(raw)
+    assert r["parsed"] is True
+    assert r["feedback"] == "ok"
+
+
+def test_parse_review_unparseable_keeps_raw():
+    """Prose review must degrade to raw text, never to invented numbers."""
+    r = parse_review_result("This essay reads well but rambles.")
+    assert r["parsed"] is False
+    assert r["average"] == 0.0
+    assert "rambles" in r["raw"]
+
+
+# ---------------------------------------------------------------------------
+# resolve_api_url
+# ---------------------------------------------------------------------------
+
+def test_resolve_api_url_cli():
+    assert resolve_api_url("cli") == "cli"
+
+
+def test_resolve_api_url_passes_through_url():
+    assert resolve_api_url("https://api.minimax.io/v1") == "https://api.minimax.io/v1"
+
+
+def test_resolve_api_url_rejects_non_url_provider(monkeypatch):
+    """A typo'd provider must fail loudly, not become an empty base URL."""
+    monkeypatch.delenv("LLM_JUDGE_API_BASE", raising=False)
+    import pytest
+    with pytest.raises(ValueError):
+        resolve_api_url("minmax")
 
 
 # ---------------------------------------------------------------------------
