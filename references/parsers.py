@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import re
+from typing import Optional
 
 
 def strip_thinking(raw: str) -> str:
@@ -19,16 +20,33 @@ def strip_thinking(raw: str) -> str:
     then poisons the regex fallback, which reads the scratchpad as if it were the
     verdict.
 
-    Only closed blocks are stripped, and any closing tag ends any opening tag --
-    real output pairs them, and matching names strictly leaves the mismatched
-    `<thinking>...</think>` case unstripped. An unclosed tag is left alone: it is
-    far more often a mention inside a legitimate payload (`"verdict": "no <think>
-    needed"`) than a truncated scratchpad, and stripping to end-of-text would
-    destroy that payload. Callers that need the truncated case handled see a
-    failed parse, which is the safe outcome.
+    Scanned left to right so a block never spans text between two blocks: a payload
+    that merely mentions `<think>` followed by a real scratchpad must not have the
+    span between them swallowed. Only closed blocks are stripped -- an unclosed tag
+    is far more often a mention inside a payload than a truncated scratchpad, and a
+    genuinely truncated one still fails safe via the failed parse.
     """
-    return re.sub(r"<(?:thinking|think)>.*?</(?:thinking|think)>", "", raw,
-                  flags=re.DOTALL | re.IGNORECASE)
+    out, pos = [], 0
+    for m in re.finditer(r"<(?:thinking|think)>", raw, re.IGNORECASE):
+        if m.start() < pos:
+            continue
+        close = re.compile(r"</(?:thinking|think)>", re.IGNORECASE).search(raw, m.end())
+        if not close:
+            break
+        # Pair with the innermost open before this close: otherwise a payload
+        # mention would swallow everything up to a *later* block's closing tag.
+        inner = None
+        for nxt in re.finditer(r"<(?:thinking|think)>", raw[m.end():close.start()],
+                               re.IGNORECASE):
+            inner = m.end() + nxt.start()
+        if inner is not None:
+            out.append(raw[pos:inner])
+            pos = close.end()
+            continue
+        out.append(raw[pos:m.start()])
+        pos = close.end()
+    out.append(raw[pos:])
+    return "".join(out)
 
 
 def parse_pairwise_result(raw: str) -> dict:
@@ -69,10 +87,11 @@ def parse_gate_result(raw: str) -> dict:
 
     Tries JSON first (on text with <thinking> blocks stripped), falls back to regex.
 
-    The regex path fails CLOSED: `passed` requires an affirmative verdict (or a
-    parsed score over the bar), never the mere presence of the substring "pass" --
-    which also appears in "does not pass". Unparseable prose is a refusal, not an
-    approval.
+    The regex path fails CLOSED and reads exactly ONE decision site: the first
+    verdict-labelled line, else a lone verdict word on its own line. It does not
+    scan the document for an affirmative-looking token -- that is what let a FAIL
+    verdict be overridden by the word "pass" occurring later in the rationale.
+    Anything else is a refusal, not an approval.
 
     Returns dict with score, passed, verdict, and `scored` -- False when no score
     was parseable, so callers render "--" instead of a fabricated 0.00/5.
@@ -87,17 +106,52 @@ def parse_gate_result(raw: str) -> dict:
             "scored": True,
         }
     except Exception:
-        score_match = re.search(r'Score:\s*(\d+\.?\d*)', cleaned, re.IGNORECASE)
-        score = float(score_match.group(1)) if score_match else 0.0
-        # Anchor on a verdict-bearing label so "does not pass" cannot match, but
-        # tolerate the decoration real judges emit: **PASS**, PASSED, Result:/Gate:.
-        affirmative = re.search(
-            r'\b(?:verdict|result|gate|status)\b\s*:?\s*\**\s*passe?d?\b'
-            r'|^\s*\**\s*passe?d?\s*\**\s*$',
-            cleaned, re.IGNORECASE | re.MULTILINE)
-        passed = bool(affirmative) or (score_match is not None and score >= 3.5)
-        return {"score": score, "passed": passed, "verdict": cleaned[:200],
-                "scored": score_match is not None}
+        pass
+    score_match = re.search(r'Score:\s*(\d+\.?\d*)', cleaned, re.IGNORECASE)
+    score = float(score_match.group(1)) if score_match else 0.0
+    decision = _gate_decision(cleaned)
+    if decision is None:
+        # No decision site at all: a score over the bar is the only other signal.
+        passed = score_match is not None and score >= 3.5
+    else:
+        passed = decision
+    return {"score": score, "passed": passed, "verdict": cleaned[:200],
+            "scored": score_match is not None}
+
+
+# The verdict word, optionally decorated (**PASS**, `FAIL`), alone in its span.
+_VERDICT_WORD = re.compile(r'^[\s*_`|]*(pass(?:ed)?|fail(?:ed)?|reject(?:ed)?)[\s*_`|.!]*$',
+                           re.IGNORECASE)
+# The same word opening a labelled value, which may carry a trailing rationale
+# ("Verdict: PASS -- meets the bar"). Anchored at the start so the rationale can
+# never supply the decision.
+_VERDICT_LEAD = re.compile(r'^[\s*_`|]*(pass(?:ed)?|fail(?:ed)?|reject(?:ed)?)\b',
+                           re.IGNORECASE)
+_VERDICT_LABEL = re.compile(r'^[\s*_`|>#-]*(?:verdict|result|gate|status|decision|assessment)'
+                            r'[\s*_`]*(?::|\|)[\s|]*(.+?)[\s|]*$', re.IGNORECASE)
+
+
+def _gate_decision(cleaned: str) -> Optional[bool]:
+    """Return the gate's decision from its ONE decision site, or None if absent.
+
+    Checks each line for a verdict label and reads only that line's value; falls
+    back to a line that is nothing but a verdict word. Returns None when neither
+    exists, so the caller can fail closed rather than guess from stray prose.
+    """
+    lines = cleaned.splitlines()
+    for line in lines:
+        label = _VERDICT_LABEL.match(line)
+        if label:
+            value = label.group(1)
+            # A markdown table row leaves the value padded with pipes. The word
+            # must open the value -- never merely appear inside its rationale.
+            word = _VERDICT_WORD.match(value) or _VERDICT_LEAD.match(value)
+            return word.group(1).lower().startswith("pass") if word else False
+    for line in lines:
+        word = _VERDICT_WORD.match(line)
+        if word:
+            return word.group(1).lower().startswith("pass")
+    return None
 
 
 def parse_review_result(raw: str) -> dict:

@@ -4,6 +4,8 @@ import json
 import sys
 import os
 
+import pytest
+
 # Enable package-style imports from project root
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
@@ -466,6 +468,75 @@ def test_gate_fails_closed_on_unparseable_prose():
     r = parse_gate_result("The response was empty.")
     assert r["passed"] is False
     assert r["score"] == 0.0
+
+
+# Every fail-open and fail-always case found across three review rounds. The gate
+# reads ONE decision site; these pin that it stays one, in both directions.
+GATE_MUST_BLOCK = [
+    "Verdict: FAIL\n\nCriteria:\n  pass\n",
+    "Verdict: FAIL\nThe earlier attempt:\nPASSED\n",
+    "Verdict: FAIL\nResult: passed 3 of 9 tests",
+    "Verdict: FAIL. This does not pass the safety bar.",
+    "The document fails. I would not pass this.",
+    "Verdict: FAIL\n\nThe rubric asks whether it passed.",
+    "Result: the gate did not pass",
+    "status: not passed",
+    "Verdict: REJECTED\npass",
+    "| Verdict | FAIL |\npass",
+    "Verdict: FAIL\n> PASS was the earlier run",
+    "Assessment: FAIL\nPASS\n",
+    "Verdict: FAIL\n```\nPASS\n```",
+    "The response was empty.",
+    "<thinking>this would pass",
+]
+
+GATE_MUST_PASS = [
+    "Verdict: PASS -- meets the bar.",
+    "Score: 4.5 solid work",
+    "Verdict: **PASS**",
+    "verdict: pass",
+    "Verdict:PASS",
+    "Result: PASS",
+    "Gate: PASSED",
+    "PASSED",
+    "**PASS**",
+    "Assessment: PASS",
+    "Decision: PASS",
+    "| Verdict | PASS |",
+    "Verdict: PASS\n\nThe artifact is clear and well-sourced.",
+    "<thinking>hmm</thinking>Verdict: PASS",
+]
+
+
+@pytest.mark.parametrize("raw", GATE_MUST_BLOCK)
+def test_gate_never_fails_open(raw):
+    """A rejected artifact must never ship because "pass" appears in the rationale.
+
+    Each case here fooled an earlier version of the parser. The recurring shape:
+    a FAIL verdict followed by prose, a table, or a quote containing an
+    affirmative-looking token that a document-wide scan then read as the verdict.
+    """
+    assert parse_gate_result(raw)["passed"] is False
+
+
+@pytest.mark.parametrize("raw", GATE_MUST_PASS)
+def test_gate_never_fails_always(raw):
+    """Fail-closed must not become fail-always -- blocking good artifacts is a
+    real regression too, just a quieter one. Judges decorate their verdicts."""
+    assert parse_gate_result(raw)["passed"] is True
+
+
+def test_strip_thinking_does_not_span_separate_blocks():
+    """A payload mention plus a later real scratchpad must not swallow the payload.
+
+    The mention's tag paired with the *later* block's closing tag and deleted
+    everything between, turning a PASS into a hard FAIL.
+    """
+    raw = ('{"score": 5.0, "passed": true, "verdict": "no <think> needed"}\n'
+           '<thinking>done</thinking>')
+    r = parse_gate_result(raw)
+    assert r["passed"] is True
+    assert abs(r["score"] - 5.0) < 0.01
 
 
 def test_gate_accepts_affirmative_verdict():

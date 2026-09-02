@@ -105,11 +105,12 @@ docs/                  # Architecture + CLI reference
 - Elo seeding and band narrowing must use the same (Elo desc, id asc) tiebreak
 - `--elo-class K` must compete strictly fewer artifacts than `--elo-rank K` (that is its only reason to exist)
 - parse_pairwise_result must fall back to regex when JSON parse fails (no hard crash)
-- The gate fails CLOSED: `passed` requires a labelled or standalone affirmative verdict, or a parsed score over the bar — never the substring "pass", which also occurs in "does not pass"
+- The gate reads exactly ONE decision site — the first verdict-labelled line, else a lone verdict word on its own line — and never scans the document for an affirmative-looking token; a scan lets a FAIL verdict be overridden by "pass" appearing later in the rationale
+- The gate fails CLOSED: no decision site and no score over the bar means blocked
 - Fail-closed must not become fail-always: decorated approvals (`**PASS**`, `Result: PASSED`) still pass, or the gate blocks good artifacts
 - A gate verdict with no parseable score reports `scored: False` and renders `--`, never a fabricated `0.00/5`
 - Every parser strips reasoning scratchpad before parsing — `<thinking>`/`<think>`, any case — so a verdict is never read out of deliberation
-- Only CLOSED scratchpad blocks are stripped: an unclosed tag is a mention inside a payload (`"verdict": "no <think> needed"`), and stripping to end-of-text would destroy valid output
+- Only CLOSED scratchpad blocks are stripped, each paired with its innermost open: an unclosed tag is a mention inside a payload (`"verdict": "no <think> needed"`), and spanning to a later block's closing tag would destroy valid output
 - Unparseable review output degrades to raw text (`parsed: False`), never to fabricated scores — including JSON that parses but lacks the fields the caller renders
 - `--provider` that is neither `cli` nor a URL must raise, never resolve to an empty base URL — validated in `main()` before any artifact loads or API call, surfaced as a message not a traceback
 - `--elo-rank` / `--elo-class` must be placed AFTER artifact paths (argparse nargs='*' greedy)
