@@ -102,7 +102,9 @@ def mode_gate(artifacts: list[dict], criteria: dict, task: str, opts: JudgeOpts)
     lines = [f"# Gate Results\n", f"**Task:** {task}\n"]
     for r in results:
         icon = "\u2705" if r["passed"] else "\u274c"
-        lines.append(f"{icon} **{r['id']}** \u2014 {r['score']:.2f}/5 \u2014 {r['verdict']}")
+        # No parseable score renders as "--", never a fabricated 0.00/5.
+        score_text = f"{r['score']:.2f}/5" if r.get("scored", True) else "--"
+        lines.append(f"{icon} **{r['id']}** \u2014 {score_text} \u2014 {r['verdict']}")
     # py3.9 compat: a backslash escape may not appear inside an f-string expression
     overall = "PASS \u2705" if all_passed else "FAIL \u274c"
     lines.append(f"\n**Overall: {overall}**")

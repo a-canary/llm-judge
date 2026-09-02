@@ -469,9 +469,16 @@ def test_gate_fails_closed_on_unparseable_prose():
 
 
 def test_gate_accepts_affirmative_verdict():
-    """The regex path still passes a genuine PASS -- fail-closed, not fail-always."""
-    assert parse_gate_result("Verdict: PASS -- meets the bar.")["passed"] is True
-    assert parse_gate_result("Score: 4.5 solid work")["passed"] is True
+    """Fail-closed must not become fail-always: real approvals still pass.
+
+    Judges decorate their verdicts. If only the bare literal "Verdict: PASS"
+    were accepted, the gate would block good artifacts -- a usability
+    regression as real as the fail-open bug, just quieter.
+    """
+    for raw in ("Verdict: PASS -- meets the bar.", "Score: 4.5 solid work",
+                "Verdict: **PASS**", "verdict: pass", "Verdict:PASS",
+                "Result: PASS", "Gate: PASSED", "PASSED", "**PASS**"):
+        assert parse_gate_result(raw)["passed"] is True, raw
 
 
 def test_strip_thinking_covers_tag_variants():
@@ -486,8 +493,38 @@ def test_strip_thinking_covers_tag_variants():
         r = parse_gate_result(raw)
         assert r["passed"] is False, raw
         assert r["verdict"] == "unsafe"
+    # Mismatched open/close still strips: real output pairs them loosely.
+    assert parse_gate_result(f'<thinking>bad</think>{payload}')["passed"] is False
     # Truncated mid-scratchpad: no verdict was ever emitted, so it must not pass.
-    assert parse_gate_result("<thinking>this would pass").get("passed") is False
+    assert parse_gate_result("<thinking>this would pass")["passed"] is False
+
+
+def test_strip_thinking_leaves_unclosed_tag_in_payload_alone():
+    """An unclosed tag inside a real payload is a mention, not a scratchpad.
+
+    Stripping `<think>` to end-of-text destroyed valid output: a judge that
+    passed an artifact whose verdict merely mentioned the tag was rendered as
+    a hard FAIL. Only closed blocks are scratchpad.
+    """
+    r = parse_gate_result('{"score":4.5,"passed":true,"verdict":"no <think> needed"}')
+    assert r["passed"] is True
+    assert abs(r["score"] - 4.5) < 0.01
+    rv = parse_review_result(
+        '{"scores":{"Clarity":4},"average":4.0,"feedback":"Avoid <think> tags"}')
+    assert rv["parsed"] is True
+    assert abs(rv["average"] - 4.0) < 0.01
+
+
+def test_gate_marks_unscored_verdicts():
+    """A verdict with no parseable score must not render as a real 0.00/5.
+
+    Same fabricated-score defect as the review parser: 0.0 as a no-signal
+    sentinel is indistinguishable from a genuine failing score.
+    """
+    r = parse_gate_result("Verdict: PASS")
+    assert r["passed"] is True and r["scored"] is False
+    assert parse_gate_result("Score: 4.5 good")["scored"] is True
+    assert parse_gate_result('{"score":1.0,"passed":false}')["scored"] is True
 
 
 def test_parse_review_rejects_wrong_shaped_json():

@@ -17,10 +17,17 @@ def strip_thinking(raw: str) -> str:
     Reasoning providers wrap deliberation in <thinking> (MiniMax) or <think>
     (DeepSeek, Qwen) before the real answer. Left in, it defeats the JSON parse and
     then poisons the regex fallback, which reads the scratchpad as if it were the
-    verdict. An unclosed block is treated as scratchpad to end-of-text: a truncated
-    response must not leak deliberation into a verdict.
+    verdict.
+
+    Only closed blocks are stripped, and any closing tag ends any opening tag --
+    real output pairs them, and matching names strictly leaves the mismatched
+    `<thinking>...</think>` case unstripped. An unclosed tag is left alone: it is
+    far more often a mention inside a legitimate payload (`"verdict": "no <think>
+    needed"`) than a truncated scratchpad, and stripping to end-of-text would
+    destroy that payload. Callers that need the truncated case handled see a
+    failed parse, which is the safe outcome.
     """
-    return re.sub(r"<(thinking|think)>.*?(</\1>|$)", "", raw,
+    return re.sub(r"<(?:thinking|think)>.*?</(?:thinking|think)>", "", raw,
                   flags=re.DOTALL | re.IGNORECASE)
 
 
@@ -62,12 +69,13 @@ def parse_gate_result(raw: str) -> dict:
 
     Tries JSON first (on text with <thinking> blocks stripped), falls back to regex.
 
-    The regex path fails CLOSED: `passed` requires an affirmative "Verdict: PASS"
-    (or a parsed score over the bar), never the mere presence of the substring
-    "pass" -- which also appears in "does not pass". Unparseable prose is a
-    refusal, not an approval.
+    The regex path fails CLOSED: `passed` requires an affirmative verdict (or a
+    parsed score over the bar), never the mere presence of the substring "pass" --
+    which also appears in "does not pass". Unparseable prose is a refusal, not an
+    approval.
 
-    Returns dict with score, passed, verdict.
+    Returns dict with score, passed, verdict, and `scored` -- False when no score
+    was parseable, so callers render "--" instead of a fabricated 0.00/5.
     """
     cleaned = strip_thinking(raw)
     try:
@@ -76,14 +84,20 @@ def parse_gate_result(raw: str) -> dict:
             "score": float(data["score"]),
             "passed": bool(data.get("passed", float(data["score"]) >= 3.5)),
             "verdict": data.get("verdict", ""),
+            "scored": True,
         }
     except Exception:
         score_match = re.search(r'Score:\s*(\d+\.?\d*)', cleaned, re.IGNORECASE)
         score = float(score_match.group(1)) if score_match else 0.0
-        affirmative = re.search(r'\bVerdict:\s*PASS\b', cleaned, re.IGNORECASE)
+        # Anchor on a verdict-bearing label so "does not pass" cannot match, but
+        # tolerate the decoration real judges emit: **PASS**, PASSED, Result:/Gate:.
+        affirmative = re.search(
+            r'\b(?:verdict|result|gate|status)\b\s*:?\s*\**\s*passe?d?\b'
+            r'|^\s*\**\s*passe?d?\s*\**\s*$',
+            cleaned, re.IGNORECASE | re.MULTILINE)
         passed = bool(affirmative) or (score_match is not None and score >= 3.5)
-        verdict = cleaned[:200]
-        return {"score": score, "passed": passed, "verdict": verdict}
+        return {"score": score, "passed": passed, "verdict": cleaned[:200],
+                "scored": score_match is not None}
 
 
 def parse_review_result(raw: str) -> dict:

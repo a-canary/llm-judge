@@ -130,8 +130,9 @@ CLI header derives its "R3 competes a..b" line from it rather than recomputing.
 |-----------|----------|
 | HTTP error / timeout | Print error, return `(5.0, 5.0)` (draw) |
 | JSON parse failure | Fall back to regex: `Winner: A/B` + score extraction |
-| Reasoning scratchpad (`<thinking>`, `<think>`) | `strip_thinking()` in every parser, before both the JSON and the regex path; case-insensitive, and an unclosed block strips to end-of-text |
-| Gate output with no affirmative verdict | Fails CLOSED (`passed: False`, `score: 0.0`) — a refusal, not an approval |
+| Reasoning scratchpad (`<thinking>`, `<think>`) | `strip_thinking()` in every parser, before both the JSON and the regex path; case-insensitive, closed blocks only — an unclosed tag is a payload mention, not scratchpad |
+| Gate output with no affirmative verdict | Fails CLOSED (`passed: False`) — a refusal, not an approval |
+| Gate verdict with no parseable score | `scored: False`; the CLI renders `--` rather than a fabricated `0.00/5` |
 | Unknown `--provider` value | `ValueError` naming the bad value; caught in `main()` → `error: …` + exit 1, before artifacts load |
 | Unparseable review prose, or JSON missing `scores`/`average` | `parsed: False` + raw text echoed; no fabricated scores |
 | Cache miss | Call judge, cache result |
