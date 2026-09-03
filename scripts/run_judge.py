@@ -12,7 +12,6 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -25,10 +24,15 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 from references import elo as _elo
-from references.artifacts import load_artifact, load_artifacts
-from references.caller import DEFAULT_SYSTEM, call_claude
+from references.artifacts import load_artifacts
+from references.caller import call_claude
 from references.criteria import DEFAULT_CRITERIA, validate_criteria
-from references.parsers import parse_gate_result, parse_pairwise_result
+from references.providers import resolve_api_url
+from references.parsers import (
+    parse_gate_result,
+    parse_pairwise_result,
+    parse_review_result,
+)
 from references.prompts import (
     build_critique_prompt,
     build_dimensions_text,
@@ -71,18 +75,14 @@ def mode_review(artifacts: list[dict], criteria: dict, task: str, opts: JudgeOpt
     for a in artifacts:
         prompt = build_critique_prompt(a, dims, task)
         raw = call_claude(prompt, model=opts.model, effort=opts.effort, provider=opts.provider)
-        try:
-            data = json.loads(raw)
-            scores = data.get("scores", {})
-            feedback = data.get("feedback", "")
-            avg = data.get("average", 0)
-            lines.append(f"\n## {a['id']} \u2014 {avg:.2f}/5")
-            for d in dims:
-                s = scores.get(d["name"], "?")
-                lines.append(f"- **{d['name']}**: {s}/5")
-            lines.append(f"\n{feedback}\n")
-        except Exception:
-            lines.append(f"\n## {a['id']}\n\n{raw[:500]}\n")
+        review = parse_review_result(raw)
+        if not review["parsed"]:
+            lines.append(f"\n## {a['id']}\n\n{review['raw'][:500]}\n")
+            continue
+        lines.append(f"\n## {a['id']} \u2014 {review['average']:.2f}/5")
+        for d in dims:
+            lines.append(f"- **{d['name']}**: {review['scores'].get(d['name'], '?')}/5")
+        lines.append(f"\n{review['feedback']}\n")
     return render_and_emit("\n".join(lines), opts.output)
 
 
@@ -102,8 +102,12 @@ def mode_gate(artifacts: list[dict], criteria: dict, task: str, opts: JudgeOpts)
     lines = [f"# Gate Results\n", f"**Task:** {task}\n"]
     for r in results:
         icon = "\u2705" if r["passed"] else "\u274c"
-        lines.append(f"{icon} **{r['id']}** \u2014 {r['score']:.2f}/5 \u2014 {r['verdict']}")
-    lines.append(f"\n**Overall: {'PASS \u2705' if all_passed else 'FAIL \u274c'}**")
+        # No parseable score renders as "--", never a fabricated 0.00/5.
+        score_text = f"{r['score']:.2f}/5" if r.get("scored", True) else "--"
+        lines.append(f"{icon} **{r['id']}** \u2014 {score_text} \u2014 {r['verdict']}")
+    # py3.9 compat: a backslash escape may not appear inside an f-string expression
+    overall = "PASS \u2705" if all_passed else "FAIL \u274c"
+    lines.append(f"\n**Overall: {overall}**")
     return render_and_emit("\n".join(lines), opts.output)
 
 
@@ -119,11 +123,6 @@ def mode_elo(artifacts: list[dict], criteria: dict, task: str, opts: JudgeOpts,
     dims_hash = hashlib.sha256(dims_text.encode()).hexdigest()[:12]
     cache = _elo.FIFOCache()
 
-    # Build id → content lookup from the input artifact dicts.
-    # ArtifactElo (constructed inside rank_swiss_elo) only carries
-    # content_hash — we need the full content for the judge prompt.
-    artifacts_by_id: dict[str, dict] = {a["id"]: a for a in artifacts}
-
     def compare_fn(
         task: str,
         dims_hash: str,
@@ -131,18 +130,12 @@ def mode_elo(artifacts: list[dict], criteria: dict, task: str, opts: JudgeOpts,
         b: _elo.ArtifactElo,
         cache: _elo.FIFOCache,
     ) -> dict:
-        a_id = a.id
-        b_id = b.id
-        a_content = artifacts_by_id[a_id]["content"]
-        b_content = artifacts_by_id[b_id]["content"]
-        a_hash = a.content_hash
-        b_hash = b.content_hash
-        cached = cache.get(task, dims_hash, a_id, a_hash, b_id, b_hash)
+        cached = cache.get(task, dims_hash, a.id, a.content_hash, b.id, b.content_hash)
         if cached:
             return cached
         prompt = build_pairwise_prompt(
-            {"id": a_id, "content": a_content},
-            {"id": b_id, "content": b_content},
+            {"id": a.id, "content": a.content},
+            {"id": b.id, "content": b.content},
             criteria["dimensions"],
             task,
         )
@@ -157,7 +150,7 @@ def mode_elo(artifacts: list[dict], criteria: dict, task: str, opts: JudgeOpts,
             "b_score": result["b_score"],
             "reason": result["reason"],
         }
-        cache.set(task, dims_hash, a_id, a_hash, b_id, b_hash, normalized)
+        cache.set(task, dims_hash, a.id, a.content_hash, b.id, b.content_hash, normalized)
         return normalized
 
     result = _elo.rank_swiss_elo(
@@ -176,12 +169,10 @@ def mode_elo(artifacts: list[dict], criteria: dict, task: str, opts: JudgeOpts,
 
     # Header — show narrowing info
     narrowing_info = ""
-    if elo_mode == "rank":
-        narrowing_info = f" (sorted top-{elo_K}, R3 competes 1..{min(n, elo_K+2)})"
-    elif elo_mode == "class":
-        narrowing_info = (
-            f" (class {elo_K}, R3 competes {max(1, elo_K-2)}..{min(n, elo_K+2)})"
-        )
+    if elo_mode != "all" and elo_K < n:
+        lo, hi = _elo.competing_band(n, elo_mode, elo_K)
+        label = f"sorted top-{elo_K}" if elo_mode == "rank" else f"class {elo_K}"
+        narrowing_info = f" ({label}, R3 competes {lo}..{hi})"
 
     lines = [
         f"# Elo Ranking \u2014 {len(ranked_ids)} of {n}{narrowing_info}\n",
@@ -261,12 +252,12 @@ Examples:
     parser.add_argument(
         "--elo-rank",
         type=int,
-        help="Elo mode: sorted top-K. R3 competes ranks 1..K+2. Best for EA top-K selection.",
+        help="Elo mode: sorted top-K. R3 re-races ranks 1..K+2, output is ranks 1..K. Best for EA top-K selection.",
     )
     parser.add_argument(
         "--elo-class",
         type=int,
-        help="Elo mode: pivot top-K. R3 competes ranks K-2..K+2, returns top K unsorted. Best for EA survivor selection without full sort.",
+        help="Elo mode: pivot top-K. R3 races only ranks K-2..K+2 (the band straddling the cut), output is ranks 1..K. Best for EA survivor selection: cheaper than --elo-rank because fewer artifacts compete in R3.",
     )
     parser.add_argument(
         "--rounds", type=int, default=3, help="Elo rounds [default: 3]"
@@ -301,6 +292,13 @@ Examples:
     elif args.elo_class is not None:
         elo_mode = "class"
         elo_K = args.elo_class
+
+    # Validate the provider up front: a typo should fail before we load artifacts
+    # or spend a single API call, and as a message rather than a traceback.
+    try:
+        resolve_api_url(args.provider)
+    except ValueError as e:
+        sys.exit(f"error: {e}")
 
     # Load artifacts
     artifacts = load_artifacts(args.artifacts)

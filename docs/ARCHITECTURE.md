@@ -31,8 +31,10 @@ llm-judge/
 | `artifacts.py` | Load artifacts from file paths, inline:`TEXT`, or URLs; return normalized dict with id, content, content_hash
 | `caller.py` | Invoke LLM via `claude` CLI binary or OpenAI-compatible HTTP POST; returns raw text response
 | `criteria.py` | Default 5-dimension criteria (Correctness 30%, Completeness 25%, Clarity 20%, Maintainability 15%, EdgeCases 10%) + `validate_criteria()`
-| `parsers.py` | Parse raw LLM output into structured dicts; strip `<thinking>` blocks before JSON parse; fall back to regex
+| `parsers.py` | Parse raw LLM output into structured dicts. The gate's decision is made in ONE place (`_gate_passed`) for both the JSON and regex paths — a structured `verdict` is still a verdict, so the hedge and fail-closed rules cannot hold on one path and not the other. `strip_thinking()` runs first in every parser — a verdict must never be read out of a reasoning model's scratchpad. `pairwise`/`gate` fall back to regex (the gate's fallback fails closed); `review` degrades to raw text (`parsed: False`) rather than inventing scores
 | `prompts.py` | Build prompt strings for pairwise comparison, critique review, and gate evaluation
+| `providers.py` | Resolve API base URL and look up the API key (env, then keyring, then pass). `resolve_api_url()` raises `ValueError` on a provider that is neither `cli` nor a URL
+| `elo.py` | Swiss Elo tournament engine and persistent FIFO comparison cache
 
 ## Provider Abstraction
 
@@ -85,6 +87,7 @@ FIFO eviction: when `len(cache) > 512`, oldest entry is removed. Cache persists 
 class ArtifactElo:
     id: str
     content_hash: str
+    content: str = ""      # carried so compare_fn needs no id-to-content side-table
     elo: float = 1500.0
     matches: list[dict] = field(default_factory=list)
 
@@ -96,21 +99,30 @@ class ArtifactElo:
 ```
 
 ### Swiss Pairing (`_swiss_pairs`)
-1. Sort by (Elo desc, id asc) — stable tiebreaking
+1. Sort by (Elo desc, id asc) — stable tiebreaking (shared with band narrowing)
 2. Attempt adjacent pairs: (0,1), (2,3), ...
 3. For each proposed pair: if already seen in prior round, swap B with next unpaired artifact
 4. If no novel partner exists, first artifact gets a bye
 
 ### Narrowing Schedule
+Each round is scheduled as an inclusive 1-based **rank band** — the ranks that
+compete that round — not a bare count. A count could only ever mean "the top N",
+which cannot express `class` mode's band around the cut.
+
 ```
-all:  [N, N, N]        — full competition every round
-rank: [N, N, K+2]      — R3 competes ranks 1..K+2, output 1..K
-                           Best for EA: keep top K after breeding
-                           (e.g. --elo-rank 8 with pop=16 → keep top 50%)
-class:[N, N, K]        — R3 competes ranks K-2..K+2, output 1..K (unsorted)
-                           Best for EA: select survivors without full sort
-                           (e.g. --elo-class 4 with pop=16 → 4 unsorted survivors)
+all:  [(1,N), (1,N), (1,N)]        — full competition every round
+rank: [(1,N), (1,N), (1,K+2)]      — R3 re-races ranks 1..K+2, output 1..K
+                                       Best for EA: keep top K after breeding
+                                       (e.g. --elo-rank 8 with pop=16 → top 50%)
+class:[(1,N), (1,N), (K-2,K+2)]    — R3 races only the band straddling the cut,
+                                       output 1..K (by Elo)
+                                       Best for EA: cheapest survivor cut
+                                       (e.g. --elo-class 4 with pop=16 → 4 survivors)
 ```
+
+Artifacts outside the round's band take a bye and keep their current Elo.
+`competing_band(N, mode, K)` is the single source of truth for the R3 band; the
+CLI header derives its "R3 competes a..b" line from it rather than recomputing.
 
 ## Error Handling
 
@@ -118,7 +130,13 @@ class:[N, N, K]        — R3 competes ranks K-2..K+2, output 1..K (unsorted)
 |-----------|----------|
 | HTTP error / timeout | Print error, return `(5.0, 5.0)` (draw) |
 | JSON parse failure | Fall back to regex: `Winner: A/B` + score extraction |
-| MiniMax ` op ` thinking blocks | Strip with regex before JSON parse |
+| Reasoning scratchpad (`<thinking>`, `<think>`) | `strip_thinking()` in every parser, before both the JSON and the regex path; case-insensitive, depth-matched so nested blocks collapse, balanced blocks only so a payload mention never spans to a later block |
+| Gate JSON stating a hedged approval (`"verdict": "PASS pending fixes"`) | Rejected — same hedge rule as the prose path; `_gate_passed` is the single decision site |
+| Gate JSON with a `verdict` but no `passed` | The verdict is read with the prose vocabulary and outranks the score |
+| Gate output with no affirmative verdict | Fails CLOSED (`passed: False`) — a refusal, not an approval. `_gate_decision` reads every decision site and any rejection dominates; fenced examples and hedged approvals do not vote |
+| Gate verdict with no parseable score | `scored: False`; the CLI renders `--` rather than a fabricated `0.00/5` |
+| Unknown `--provider` value | `ValueError` naming the bad value; caught in `main()` → `error: …` + exit 1, before artifacts load |
+| Unparseable review prose, or JSON missing `scores`/`average` | `parsed: False` + raw text echoed; no fabricated scores |
 | Cache miss | Call judge, cache result |
 | Cache hit | Return cached result silently |
 | Empty artifact | Return error in result dict |

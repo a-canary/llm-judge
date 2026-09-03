@@ -4,19 +4,27 @@ import json
 import sys
 import os
 
+import pytest
+
 # Enable package-style imports from project root
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SCRIPTS = os.path.join(ROOT, "scripts")
 sys.path.insert(0, ROOT)
-sys.path.insert(0, SCRIPTS)
 
-from references.elo import FIFOCache, rank_swiss_elo, ArtifactElo
-from run_judge import (
-    parse_pairwise_result,
-    parse_gate_result,
-    validate_criteria,
-    load_artifact,
+from references.artifacts import load_artifact
+from references.criteria import validate_criteria
+from references.elo import (
+    FIFOCache,
+    rank_swiss_elo,
+    ArtifactElo,
+    _compute_narrowing_schedule,
 )
+from references.parsers import (
+    parse_gate_result,
+    strip_thinking,
+    parse_pairwise_result,
+    parse_review_result,
+)
+from references.providers import resolve_api_url
 
 
 # ---------------------------------------------------------------------------
@@ -63,7 +71,7 @@ def test_parse_pairwise_fallback_defaults():
 
 
 # ---------------------------------------------------------------------------
-# parse_gate_result  (sibling of parse_pairwise — same helper, no thinking strip)
+# parse_gate_result  (sibling of parse_pairwise — same thinking strip)
 # ---------------------------------------------------------------------------
 
 def test_parse_gate_clean_json():
@@ -82,22 +90,75 @@ def test_parse_gate_fallback_regex():
     assert r["passed"] is True
 
 
-def test_parse_gate_no_thinking_strip():
-    """Gate callers do not strip <thinking> by default (strip_thinking=False).
+def test_parse_gate_strips_thinking_before_verdict():
+    """A gate verdict must come from the answer, never the <thinking> scratchpad.
 
-    Pins the default by embedding a complete JSON payload INSIDE a <thinking>
-    block followed by a regex-style score. With strip_thinking=True the JSON
-    would parse first (score=2.0, failed); with the default strip_thinking=False
-    the JSON is malformed and regex picks up Score: 4.5. The two outputs are
-    distinguishable, so this test fails if the default ever flips.
+    Reasoning providers (MiniMax) wrap deliberation in <thinking>. Left in, the
+    JSON parse fails on the leading prefix and the regex fallback reads the
+    scratchpad -- which fails OPEN: an explicit {"passed": false} is reported as
+    a pass because the word "pass" appears in the deliberation.
     """
-    raw = '<thinking>{"score": 2.0, "passed": false}</thinking>Score: 4.5\nVerdict: pass'
+    raw = ('<thinking>The artifact does not pass the safety bar.</thinking>'
+           '{"score": 1.0, "passed": false, "verdict": "unsafe"}')
     r = parse_gate_result(raw)
-    # Default strip_thinking=False: text is not stripped, JSON.parse fails on
-    # the leading "<thinking>" prefix, regex fallback extracts "Score: 4.5".
+    assert r["passed"] is False
+    assert abs(r["score"] - 1.0) < 0.01
+    assert r["verdict"] == "unsafe"
+
+
+def test_parse_gate_strips_thinking_in_regex_fallback():
+    """Strip applies to the regex path too, not just the JSON path."""
+    r = parse_gate_result('<thinking>Score: 1.0 is my draft</thinking>Score: 4.5\nVerdict: pass')
     assert abs(r["score"] - 4.5) < 0.01
-    # And the verdict came from regex fallback (truncated to 200 chars).
-    assert r["verdict"].startswith("<thinking>")
+    assert not r["verdict"].startswith("<thinking>")
+
+
+# ---------------------------------------------------------------------------
+# parse_review_result
+# ---------------------------------------------------------------------------
+
+def test_parse_review_clean_json():
+    raw = '{"scores": {"Clarity": 4}, "feedback": "solid", "average": 4.0}'
+    r = parse_review_result(raw)
+    assert r["parsed"] is True
+    assert r["scores"]["Clarity"] == 4
+    assert r["feedback"] == "solid"
+    assert abs(r["average"] - 4.0) < 0.01
+
+
+def test_parse_review_strips_thinking():
+    raw = '<thinking>weighing it up</thinking>{"scores": {}, "feedback": "ok", "average": 3.0}'
+    r = parse_review_result(raw)
+    assert r["parsed"] is True
+    assert r["feedback"] == "ok"
+
+
+def test_parse_review_unparseable_keeps_raw():
+    """Prose review must degrade to raw text, never to invented numbers."""
+    r = parse_review_result("This essay reads well but rambles.")
+    assert r["parsed"] is False
+    assert r["average"] == 0.0
+    assert "rambles" in r["raw"]
+
+
+# ---------------------------------------------------------------------------
+# resolve_api_url
+# ---------------------------------------------------------------------------
+
+def test_resolve_api_url_cli():
+    assert resolve_api_url("cli") == "cli"
+
+
+def test_resolve_api_url_passes_through_url():
+    assert resolve_api_url("https://api.minimax.io/v1") == "https://api.minimax.io/v1"
+
+
+def test_resolve_api_url_rejects_non_url_provider(monkeypatch):
+    """A typo'd provider must fail loudly, not become an empty base URL."""
+    monkeypatch.delenv("LLM_JUDGE_API_BASE", raising=False)
+    import pytest
+    with pytest.raises(ValueError):
+        resolve_api_url("minmax")
 
 
 # ---------------------------------------------------------------------------
@@ -238,9 +299,12 @@ def test_rank_swiss_elo_ranked_is_list_of_ids():
         {"id": "c", "content_hash": "h3", "content": "ccc"},
     ]
     result = rank_swiss_elo(artifacts, "task", "hash", cache, compare_fn, n_rounds=1)
-    # b wins every match, so b first
-    assert result["ranked"] == ["b", "a", "c"]
+    # Seeding is (Elo desc, id asc), so with all Elos tied at 1500 the pair is
+    # (a, b) and c byes. "B" always wins, so b tops and the loser a sinks below
+    # the untouched bye.
+    assert result["ranked"] == ["b", "c", "a"]
     assert set(result["ranked"]) == {"a", "b", "c"}
+    assert result["artifacts"]["c"]["elo"] == 1500  # bye is not scored
 
 
 def test_rank_swiss_elo_bye_handling():
@@ -326,3 +390,295 @@ def test_rank_swiss_elo_no_repeat_pairings():
             pair_key = frozenset({pair["a"], pair["b"]})
             assert pair_key not in seen_pairs, f"Repeat pairing: {pair}"
             seen_pairs.add(pair_key)
+
+def test_rank_swiss_elo_compare_fn_receives_content():
+    """ArtifactElo carries content, so compare_fn needs no id->content side-table."""
+    cache = FIFOCache()
+    seen = {}
+
+    def compare_fn(task, dims_hash, a, b, cache):
+        seen[a.id] = a.content
+        seen[b.id] = b.content
+        return {"a_score": 3.0, "b_score": 4.0, "winner": "B", "reason": "test"}
+
+    artifacts = [
+        {"id": "a", "content_hash": "h1", "content": "aaa"},
+        {"id": "b", "content_hash": "h2", "content": "bbb"},
+    ]
+    rank_swiss_elo(artifacts, "task", "hash", cache, compare_fn, n_rounds=1)
+    assert seen == {"a": "aaa", "b": "bbb"}
+
+
+def test_class_mode_r3_competes_the_cut_band_not_the_leaders():
+    """`--elo-class K` exists to be cheaper than `--elo-rank K` by racing only
+    the ranks straddling the cut. Regression guard: the schedule used to be a
+    bare count, which silently raced ranks 1..K (the leaders) instead."""
+    rank = _compute_narrowing_schedule(20, 3, "rank", 5)
+    klass = _compute_narrowing_schedule(20, 3, "class", 5)
+
+    assert rank[2] == (1, 7)     # leaders re-race
+    assert klass[2] == (3, 7)    # band straddles the cut at 5/6
+    # the point of class mode: strictly fewer comparisons than rank mode
+    def width(b):
+        return b[1] - b[0] + 1
+    assert width(klass[2]) < width(rank[2])
+
+
+def test_narrowing_bands_are_capped_and_disabled_when_K_exceeds_N():
+    assert _compute_narrowing_schedule(4, 3, "class", 5) == [(1, 4)] * 3   # K >= N
+    assert _compute_narrowing_schedule(6, 3, "class", 2) == [(1, 6), (1, 6), (1, 4)]
+    assert _compute_narrowing_schedule(6, 3, "all", 0) == [(1, 6)] * 3
+
+
+def test_class_mode_byes_the_artifacts_outside_the_cut_band():
+    """Artifacts above and below the R3 band both sit out that round."""
+    cache = FIFOCache()
+
+    def compare_fn(task, dims_hash, a, b, cache):
+        return {"a_score": 3.0, "b_score": 4.0, "winner": "B", "reason": "test"}
+
+    artifacts = [
+        {"id": f"a{i}", "content_hash": f"h{i}", "content": f"c{i}"} for i in range(8)
+    ]
+    result = rank_swiss_elo(
+        artifacts, "task", "hash", cache, compare_fn,
+        n_rounds=3, elo_mode="class", elo_K=4,
+    )
+    r3 = result["rounds_log"][2]
+    assert r3["competing_ranks"] == [2, 6]   # K-2 .. K+2
+    # ranks 1, 7, 8 sit out from narrowing; the 5-artifact band is odd, so one
+    # in-band artifact byes for lack of a partner too.
+    assert len(r3["byes"]) == 4
+    assert len(result["ranked"]) == 4        # output still trimmed to top K
+
+
+def test_gate_fails_closed_on_negated_pass():
+    """"does not pass" must not read as a pass.
+
+    The substring test `"pass" in raw.lower()` matched the word inside its own
+    negation, so an explicit FAIL verdict reported passed=True. A safety gate
+    requires an affirmative signal, never the mere presence of the word.
+    """
+    for prose in ("Verdict: FAIL. This does not pass the safety bar.",
+                  "The document fails. I would not pass this."):
+        assert parse_gate_result(prose)["passed"] is False, prose
+
+
+def test_gate_fails_closed_on_unparseable_prose():
+    """No parseable verdict is a refusal, not an approval."""
+    r = parse_gate_result("The response was empty.")
+    assert r["passed"] is False
+    assert r["score"] == 0.0
+
+
+# Every fail-open and fail-always case found across three review rounds. The gate
+# reads ONE decision site; these pin that it stays one, in both directions.
+GATE_MUST_BLOCK = [
+    "Verdict: FAIL\n\nCriteria:\n  pass\n",
+    "Verdict: FAIL\nThe earlier attempt:\nPASSED\n",
+    "Verdict: FAIL\nResult: passed 3 of 9 tests",
+    "Verdict: FAIL. This does not pass the safety bar.",
+    "The document fails. I would not pass this.",
+    "Verdict: FAIL\n\nThe rubric asks whether it passed.",
+    "Result: the gate did not pass",
+    "status: not passed",
+    "Verdict: REJECTED\npass",
+    "| Verdict | FAIL |\npass",
+    "Verdict: FAIL\n> PASS was the earlier run",
+    "Assessment: FAIL\nPASS\n",
+    "Verdict: FAIL\n```\nPASS\n```",
+    "The response was empty.",
+    "<thinking>this would pass",
+    # Round 4: the decision is read from EVERY site, and any rejection dominates.
+    "Docstring example:\n```\nVerdict: PASS\n```\n\nAspirational.\n\nVerdict: FAIL",
+    "## Artifact A\nVerdict: PASS\n## Artifact B\nVerdict: FAIL",
+    "<think>a\n<think>redo</think>\nVerdict: PASS\n</think>\nVerdict: FAIL",
+    "Verdict: PASS WITH RESERVATIONS",
+    "Verdict: pass, conditional on fixing the leak",
+    "Verdict: PASS pending the security review",
+    "Verdict: PASS\nVerdict: FAIL",
+    "| Criterion | Verdict |\n|---|---|\n| Clarity | PASS |\n| Safety | FAIL |",
+    "Result: Rejected",
+    "Decision: no",
+    "| Dimension | Verdict |\n|---|---|\n| Safety | FAIL |\n\nVerdict: PASS",
+]
+
+GATE_MUST_PASS = [
+    "Verdict: PASS -- meets the bar.",
+    "Score: 4.5 solid work",
+    "Verdict: **PASS**",
+    "verdict: pass",
+    "Verdict:PASS",
+    "Result: PASS",
+    "Gate: PASSED",
+    "PASSED",
+    "**PASS**",
+    "Assessment: PASS",
+    "Decision: PASS",
+    "| Verdict | PASS |",
+    "Verdict: PASS\n\nThe artifact is clear and well-sourced.",
+    "<thinking>hmm</thinking>Verdict: PASS",
+    "Result: Approved\nScore: 4.8", "Decision: accept", "Verdict: yes",
+    "| Criterion | Verdict |\n|---|---|\n| Clarity | PASS |",
+    "## Artifact A\nVerdict: PASS\n## Artifact B\nVerdict: PASS",
+    # A non-verdict column must not vote: "Blocking | No" is not a rejection.
+    "| Dimension | Score | Blocking |\n|---|---|---|\n| Clarity | 5 | No |\n\nVerdict: PASS",
+    "Verdict: PASS\n\nNo issues found.",
+    "Verdict: PASS\n\nRejected alternatives were considered.",
+    "Verdict: PASS\r\nScore: 4.2\r\n",
+    "> Verdict: PASS",
+]
+
+
+@pytest.mark.parametrize("raw", GATE_MUST_BLOCK)
+def test_gate_never_fails_open(raw):
+    """A rejected artifact must never ship because "pass" appears in the rationale.
+
+    Each case here fooled an earlier version of the parser. The recurring shape:
+    a FAIL verdict followed by prose, a table, or a quote containing an
+    affirmative-looking token that a document-wide scan then read as the verdict.
+    """
+    assert parse_gate_result(raw)["passed"] is False
+
+
+@pytest.mark.parametrize("raw", GATE_MUST_PASS)
+def test_gate_never_fails_always(raw):
+    """Fail-closed must not become fail-always -- blocking good artifacts is a
+    real regression too, just a quieter one. Judges decorate their verdicts."""
+    assert parse_gate_result(raw)["passed"] is True
+
+
+def test_strip_thinking_does_not_span_separate_blocks():
+    """A payload mention plus a later real scratchpad must not swallow the payload.
+
+    The mention's tag paired with the *later* block's closing tag and deleted
+    everything between, turning a PASS into a hard FAIL.
+    """
+    raw = ('{"score": 5.0, "passed": true, "verdict": "no <think> needed"}\n'
+           '<thinking>done</thinking>')
+    r = parse_gate_result(raw)
+    assert r["passed"] is True
+    assert abs(r["score"] - 5.0) < 0.01
+
+
+def test_gate_accepts_affirmative_verdict():
+    """Fail-closed must not become fail-always: real approvals still pass.
+
+    Judges decorate their verdicts. If only the bare literal "Verdict: PASS"
+    were accepted, the gate would block good artifacts -- a usability
+    regression as real as the fail-open bug, just quieter.
+    """
+    for raw in ("Verdict: PASS -- meets the bar.", "Score: 4.5 solid work",
+                "Verdict: **PASS**", "verdict: pass", "Verdict:PASS",
+                "Result: PASS", "Gate: PASSED", "PASSED", "**PASS**"):
+        assert parse_gate_result(raw)["passed"] is True, raw
+
+
+def test_strip_thinking_covers_tag_variants():
+    """<think> (DeepSeek/Qwen), odd casing, and unclosed blocks are all scratchpad.
+
+    Stripping only lowercase <thinking> left the identical fail-open bug one tag
+    name away: the deliberation survived and the regex fallback read it.
+    """
+    payload = '{"score": 1.0, "passed": false, "verdict": "unsafe"}'
+    for raw in (f'<Thinking>does not pass</Thinking>{payload}',
+                f'<think>does not pass</think>{payload}'):
+        r = parse_gate_result(raw)
+        assert r["passed"] is False, raw
+        assert r["verdict"] == "unsafe"
+    # Mismatched open/close still strips: real output pairs them loosely.
+    assert parse_gate_result(f'<thinking>bad</think>{payload}')["passed"] is False
+    # Truncated mid-scratchpad: no verdict was ever emitted, so it must not pass.
+    assert parse_gate_result("<thinking>this would pass")["passed"] is False
+
+
+def test_strip_thinking_leaves_unclosed_tag_in_payload_alone():
+    """An unclosed tag inside a real payload is a mention, not a scratchpad.
+
+    Stripping `<think>` to end-of-text destroyed valid output: a judge that
+    passed an artifact whose verdict merely mentioned the tag was rendered as
+    a hard FAIL. Only closed blocks are scratchpad.
+    """
+    r = parse_gate_result('{"score":4.5,"passed":true,"verdict":"no <think> needed"}')
+    assert r["passed"] is True
+    assert abs(r["score"] - 4.5) < 0.01
+    rv = parse_review_result(
+        '{"scores":{"Clarity":4},"average":4.0,"feedback":"Avoid <think> tags"}')
+    assert rv["parsed"] is True
+    assert abs(rv["average"] - 4.0) < 0.01
+
+
+def test_gate_marks_unscored_verdicts():
+    """A verdict with no parseable score must not render as a real 0.00/5.
+
+    Same fabricated-score defect as the review parser: 0.0 as a no-signal
+    sentinel is indistinguishable from a genuine failing score.
+    """
+    r = parse_gate_result("Verdict: PASS")
+    assert r["passed"] is True and r["scored"] is False
+    assert parse_gate_result("Score: 4.5 good")["scored"] is True
+    assert parse_gate_result('{"score":1.0,"passed":false}')["scored"] is True
+
+
+def test_parse_review_rejects_wrong_shaped_json():
+    """Valid JSON that isn't a review must not surface as a real 0.00/5 score."""
+    for raw in ('{"scores": {"Clarity": 4}}', '["not", "a", "review"]', '42'):
+        assert parse_review_result(raw)["parsed"] is False, raw
+
+
+def test_strip_thinking_collapses_nested_blocks():
+    """A nested block must not close its parent early and leak the parent's tail."""
+    raw = "<think>a\n<think>inner</think>\nVerdict: PASS\n</think>\nVerdict: FAIL"
+    assert "PASS" not in strip_thinking(raw)
+
+
+def test_gate_ignores_verdict_quoted_in_fenced_block():
+    """A fenced example quotes the response format, it does not cast a vote."""
+    assert parse_gate_result("```\nVerdict: PASS\n```\nVerdict: FAIL")["passed"] is False
+
+
+def test_gate_rejection_dominates_across_artifacts():
+    """One response covering several artifacts fails if any one of them fails."""
+    assert parse_gate_result("A\nVerdict: PASS\nB\nVerdict: FAIL")["passed"] is False
+
+
+def test_gate_applies_the_same_verdict_rules_to_json_and_prose():
+    """A structured verdict is still a verdict — one rulebook, not two.
+
+    The hedge and fail-closed rules lived only in the regex fallback, so a judge
+    that answered in exactly the JSON format the prompt asks for bypassed them:
+    `{"passed": true, "verdict": "PASS with reservations"}` approved an artifact
+    that the identical prose verdict blocks. The decision rule must not depend on
+    which shape the judge happened to answer in.
+    """
+    # A qualified approval is a rejection, whichever path parses it.
+    for raw in ('{"score": 4.2, "passed": true, "verdict": "PASS, pending fixes"}',
+                '{"score": 4.2, "verdict": "PASS with reservations"}',
+                "Verdict: PASS pending fixes"):
+        assert parse_gate_result(raw)["passed"] is False, raw
+
+    # An unqualified approval still passes on both paths (fail-closed, not fail-always).
+    for raw in ('{"score": 4.2, "passed": true, "verdict": "Meets the bar"}',
+                '{"score": 2.0, "verdict": "PASS"}',
+                "Verdict: PASS"):
+        assert parse_gate_result(raw)["passed"] is True, raw
+
+
+def test_gate_json_verdict_outranks_the_score_behind_it():
+    """A stated verdict decides; the score is only consulted when none was stated."""
+    # Verdict states a rejection, score is well over the bar: the verdict wins.
+    assert parse_gate_result('{"score": 4.9, "verdict": "FAIL"}')["passed"] is False
+    # No verdict stated at all: the score is the only remaining signal.
+    assert parse_gate_result('{"score": 4.2, "verdict": ""}')["passed"] is True
+    assert parse_gate_result('{"score": 2.0, "verdict": ""}')["passed"] is False
+
+
+def test_gate_hedge_rule_does_not_reach_into_the_rationale():
+    """A qualifier in the prose after a clean verdict is rationale, not a condition.
+
+    The hedge check applies to the verdict itself. Widening it to the whole
+    response would let "however" anywhere in the write-up overturn the verdict —
+    the same fail-always failure mode as reading prose for an affirmative token.
+    """
+    raw = "Verdict: PASS\n\nThe artifact is solid, however the tests are slow."
+    assert parse_gate_result(raw)["passed"] is True
