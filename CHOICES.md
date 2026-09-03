@@ -110,6 +110,9 @@ docs/                  # Architecture + CLI reference
 - Prose is never a decision site — a scan for an affirmative-looking token is what let a FAIL verdict be overridden by "pass" appearing later in the rationale
 - A verdict quoted inside a fenced block is an example of the response format, not a vote, and is skipped
 - An approval carrying a qualifier ("PASS with reservations", "pass, conditional on...") is a rejection until the condition is met; only rejections may be qualified
+- The JSON and prose paths decide with ONE rulebook: a structured `verdict` is read with the same vocabulary as a prose one, so a judge answering in exactly the format the prompt asks for cannot bypass the hedge and fail-closed rules
+- A stated verdict outranks the score behind it; the score decides only when no verdict was stated
+- The hedge check applies to the verdict, never to the whole response — a qualifier in the rationale after a clean verdict is prose, and prose never decides
 - Approval and rejection vocabularies are explicit and symmetric (pass/approve/accept/yes vs fail/reject/deny/no); an unrecognised affirmative reads as no decision, which fails closed
 - The gate fails CLOSED: no decision site and no score over the bar means blocked
 - Fail-closed must not become fail-always: decorated approvals (`**PASS**`, `Result: PASSED`) still pass, or the gate blocks good artifacts

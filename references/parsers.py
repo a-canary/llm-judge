@@ -21,7 +21,7 @@ def strip_thinking(raw: str) -> str:
     verdict.
 
     Tags are matched by DEPTH, so a nested block collapses into its outer block
-    rather than closing it early -- pairing an outer open with an inner close would
+    rather than closing it early — pairing an outer open with an inner close would
     leave the outer block's tail (and any verdict in it) in the output.
 
     Only balanced blocks are stripped: an unclosed tag is far more often a mention
@@ -43,7 +43,7 @@ def strip_thinking(raw: str) -> str:
             j += 1
         if depth:
             # Never closed: a mention inside a payload, not a scratchpad. Skip only
-            # this tag -- a later balanced block must still be strippable.
+            # this tag — a later balanced block must still be strippable.
             i += 1
             continue
         spans.append((tags[i].start(), tags[j - 1].end()))
@@ -94,36 +94,85 @@ def parse_gate_result(raw: str) -> dict:
 
     Tries JSON first (on text with <thinking> blocks stripped), falls back to regex.
 
-    The regex path fails CLOSED and reads exactly ONE decision site: the first
-    verdict-labelled line, else a lone verdict word on its own line. It does not
-    scan the document for an affirmative-looking token -- that is what let a FAIL
-    verdict be overridden by the word "pass" occurring later in the rationale.
-    Anything else is a refusal, not an approval.
+    Both paths decide with the SAME vocabulary. A structured `verdict` is still a
+    verdict: "PASS pending fixes" is a qualified approval whether it arrives as a
+    JSON field or as a line of prose, and reading the JSON field as a bare boolean
+    let the hedge rule be bypassed by a judge that answered in exactly the format
+    the prompt asked for. Only the evidence differs — JSON states its decision,
+    prose must be located — never the rule applied to it.
 
-    Returns dict with score, passed, verdict, and `scored` -- False when no score
+    The regex path fails CLOSED and reads decision sites only: verdict-labelled
+    lines, lone verdict words, cells in a declared verdict column. It does not scan
+    the document for an affirmative-looking token — that is what let a FAIL verdict
+    be overridden by the word "pass" occurring later in the rationale.
+
+    Returns dict with score, passed, verdict, and `scored` — False when no score
     was parseable, so callers render "--" instead of a fabricated 0.00/5.
     """
     cleaned = strip_thinking(raw)
     try:
         data = json.loads(cleaned)
+        score = float(data["score"])
+        verdict = data.get("verdict", "")
+        # `passed` is the judge's decision when it supplied one. Absent, the
+        # `verdict` string is read with the same vocabulary the prose path uses --
+        # a judge that wrote {"verdict": "FAIL"} and omitted the boolean stated a
+        # decision, and falling straight through to the score would ignore it.
+        stated = data.get("passed")
+        if stated is None:
+            stated = _verdict_of(verdict)
         return {
-            "score": float(data["score"]),
-            "passed": bool(data.get("passed", float(data["score"]) >= 3.5)),
-            "verdict": data.get("verdict", ""),
+            "score": score,
+            "passed": _gate_passed(stated, verdict, score, True),
+            "verdict": verdict,
             "scored": True,
         }
     except Exception:
         pass
     score_match = re.search(r'Score:\s*(\d+\.?\d*)', cleaned, re.IGNORECASE)
     score = float(score_match.group(1)) if score_match else 0.0
-    decision = _gate_decision(cleaned)
-    if decision is None:
-        # No decision site at all: a score over the bar is the only other signal.
-        passed = score_match is not None and score >= 3.5
-    else:
-        passed = decision
-    return {"score": score, "passed": passed, "verdict": cleaned[:200],
+    # The prose path's decision already had the hedge rule applied at the decision
+    # site itself (see _verdict_of), so it passes no verdict text to re-check here:
+    # a qualifier elsewhere in the rationale is prose, and prose never decides.
+    return {"score": score,
+            "passed": _gate_passed(_gate_decision(cleaned), "", score,
+                                   score_match is not None),
+            "verdict": cleaned[:200],
             "scored": score_match is not None}
+
+
+# The weighted score at or above which an artifact clears the gate on score alone.
+# Consulted only when the judge stated no verdict — a stated verdict always
+# outranks the number behind it.
+PASS_BAR = 3.5
+
+
+def _gate_passed(stated: Optional[bool], verdict: str, score: float,
+                 scored: bool) -> bool:
+    """Decide the gate from whatever the judge stated and whatever it scored.
+
+    The single decision site for both parse paths, so the fail-closed and hedge
+    rules cannot hold on one path and not the other.
+
+    `stated` is the judge's own decision where it made one — the JSON `passed`
+    field, or the verdict read out of prose — and None where it made none.
+
+    `verdict` is the text that decision was stated in, and it is hedge-checked: an
+    approval carrying a condition is a rejection until that condition is met, so a
+    qualifier withholds the approval even when a boolean says pass. Callers that
+    already applied the hedge rule at their own decision site pass "" — widening
+    the check to a whole response would let a qualifier anywhere in the rationale
+    overturn the verdict, and rationale is not a decision site. A stated rejection
+    stands as-is; only approvals can be undercut by their own hedging.
+
+    With nothing stated, a score at or above the bar is the only remaining signal.
+    With no score either, the gate fails CLOSED.
+    """
+    if stated is False:
+        return False
+    if stated is True:
+        return not _HEDGE.search(verdict)
+    return scored and score >= PASS_BAR
 
 
 # The vocabulary a judge actually uses to decide. Kept explicit and symmetric: an
@@ -136,7 +185,7 @@ _DENY = r'fail(?:ed|s)?|reject(?:ed|s)?|deny|denied|no'
 _VERDICT_WORD = re.compile(r'^[\s*_`|]*(' + _AFFIRM + r'|' + _DENY + r')[\s*_`|.!]*$',
                            re.IGNORECASE)
 # The same word opening a labelled value, which may carry a trailing rationale
-# ("Verdict: PASS -- meets the bar"). Anchored at the start so the rationale can
+# ("Verdict: PASS — meets the bar"). Anchored at the start so the rationale can
 # never supply the decision.
 _VERDICT_LEAD = re.compile(r'^[\s*_`|]*(' + _AFFIRM + r'|' + _DENY + r')\b',
                            re.IGNORECASE)
@@ -198,7 +247,7 @@ def _gate_decision(cleaned: str) -> Optional[bool]:
         label = _VERDICT_LABEL.match(line)
         if label:
             # A markdown header row ("| Criterion | Verdict |") matches the label but
-            # names a column instead of deciding -- it is not a site at all.
+            # names a column instead of deciding — it is not a site at all.
             decision = _verdict_of(label.group(1))
             if decision is None:
                 continue
@@ -231,12 +280,12 @@ def parse_review_result(raw: str) -> dict:
     """Parse critique/review output into structured result.
 
     Tries JSON first (on text with <thinking> blocks stripped). Unlike pairwise
-    and gate there is no regex fallback -- a review is free-form prose, so a
+    and gate there is no regex fallback — a review is free-form prose, so a
     failed parse degrades to showing the raw text rather than guessing numbers.
 
     Returns dict with scores, feedback, average, and parsed. `parsed` is False
     both when the JSON parse failed and when it succeeded on JSON that is not a
-    review payload -- a missing `average` must degrade to raw text, never render
+    review payload — a missing `average` must degrade to raw text, never render
     as a real 0.00/5. In either case `raw` carries the unstructured response.
     """
     cleaned = strip_thinking(raw)

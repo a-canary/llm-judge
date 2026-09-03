@@ -31,7 +31,7 @@ llm-judge/
 | `artifacts.py` | Load artifacts from file paths, inline:`TEXT`, or URLs; return normalized dict with id, content, content_hash
 | `caller.py` | Invoke LLM via `claude` CLI binary or OpenAI-compatible HTTP POST; returns raw text response
 | `criteria.py` | Default 5-dimension criteria (Correctness 30%, Completeness 25%, Clarity 20%, Maintainability 15%, EdgeCases 10%) + `validate_criteria()`
-| `parsers.py` | Parse raw LLM output into structured dicts. `strip_thinking()` runs first in every parser — a verdict must never be read out of a reasoning model's scratchpad. `pairwise`/`gate` fall back to regex (the gate's fallback fails closed); `review` degrades to raw text (`parsed: False`) rather than inventing scores
+| `parsers.py` | Parse raw LLM output into structured dicts. The gate's decision is made in ONE place (`_gate_passed`) for both the JSON and regex paths — a structured `verdict` is still a verdict, so the hedge and fail-closed rules cannot hold on one path and not the other. `strip_thinking()` runs first in every parser — a verdict must never be read out of a reasoning model's scratchpad. `pairwise`/`gate` fall back to regex (the gate's fallback fails closed); `review` degrades to raw text (`parsed: False`) rather than inventing scores
 | `prompts.py` | Build prompt strings for pairwise comparison, critique review, and gate evaluation
 | `providers.py` | Resolve API base URL and look up the API key (env, then keyring, then pass). `resolve_api_url()` raises `ValueError` on a provider that is neither `cli` nor a URL
 | `elo.py` | Swiss Elo tournament engine and persistent FIFO comparison cache
@@ -131,6 +131,8 @@ CLI header derives its "R3 competes a..b" line from it rather than recomputing.
 | HTTP error / timeout | Print error, return `(5.0, 5.0)` (draw) |
 | JSON parse failure | Fall back to regex: `Winner: A/B` + score extraction |
 | Reasoning scratchpad (`<thinking>`, `<think>`) | `strip_thinking()` in every parser, before both the JSON and the regex path; case-insensitive, depth-matched so nested blocks collapse, balanced blocks only so a payload mention never spans to a later block |
+| Gate JSON stating a hedged approval (`"verdict": "PASS pending fixes"`) | Rejected — same hedge rule as the prose path; `_gate_passed` is the single decision site |
+| Gate JSON with a `verdict` but no `passed` | The verdict is read with the prose vocabulary and outranks the score |
 | Gate output with no affirmative verdict | Fails CLOSED (`passed: False`) — a refusal, not an approval. `_gate_decision` reads every decision site and any rejection dominates; fenced examples and hedged approvals do not vote |
 | Gate verdict with no parseable score | `scored: False`; the CLI renders `--` rather than a fabricated `0.00/5` |
 | Unknown `--provider` value | `ValueError` naming the bad value; caught in `main()` → `error: …` + exit 1, before artifacts load |

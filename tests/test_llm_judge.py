@@ -640,3 +640,45 @@ def test_gate_ignores_verdict_quoted_in_fenced_block():
 def test_gate_rejection_dominates_across_artifacts():
     """One response covering several artifacts fails if any one of them fails."""
     assert parse_gate_result("A\nVerdict: PASS\nB\nVerdict: FAIL")["passed"] is False
+
+
+def test_gate_applies_the_same_verdict_rules_to_json_and_prose():
+    """A structured verdict is still a verdict — one rulebook, not two.
+
+    The hedge and fail-closed rules lived only in the regex fallback, so a judge
+    that answered in exactly the JSON format the prompt asks for bypassed them:
+    `{"passed": true, "verdict": "PASS with reservations"}` approved an artifact
+    that the identical prose verdict blocks. The decision rule must not depend on
+    which shape the judge happened to answer in.
+    """
+    # A qualified approval is a rejection, whichever path parses it.
+    for raw in ('{"score": 4.2, "passed": true, "verdict": "PASS, pending fixes"}',
+                '{"score": 4.2, "verdict": "PASS with reservations"}',
+                "Verdict: PASS pending fixes"):
+        assert parse_gate_result(raw)["passed"] is False, raw
+
+    # An unqualified approval still passes on both paths (fail-closed, not fail-always).
+    for raw in ('{"score": 4.2, "passed": true, "verdict": "Meets the bar"}',
+                '{"score": 2.0, "verdict": "PASS"}',
+                "Verdict: PASS"):
+        assert parse_gate_result(raw)["passed"] is True, raw
+
+
+def test_gate_json_verdict_outranks_the_score_behind_it():
+    """A stated verdict decides; the score is only consulted when none was stated."""
+    # Verdict states a rejection, score is well over the bar: the verdict wins.
+    assert parse_gate_result('{"score": 4.9, "verdict": "FAIL"}')["passed"] is False
+    # No verdict stated at all: the score is the only remaining signal.
+    assert parse_gate_result('{"score": 4.2, "verdict": ""}')["passed"] is True
+    assert parse_gate_result('{"score": 2.0, "verdict": ""}')["passed"] is False
+
+
+def test_gate_hedge_rule_does_not_reach_into_the_rationale():
+    """A qualifier in the prose after a clean verdict is rationale, not a condition.
+
+    The hedge check applies to the verdict itself. Widening it to the whole
+    response would let "however" anywhere in the write-up overturn the verdict —
+    the same fail-always failure mode as reading prose for an affirmative token.
+    """
+    raw = "Verdict: PASS\n\nThe artifact is solid, however the tests are slow."
+    assert parse_gate_result(raw)["passed"] is True
