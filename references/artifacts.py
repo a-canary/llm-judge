@@ -8,6 +8,16 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 
+class ArtifactLoadError(Exception):
+    """An artifact could not be loaded, so there is nothing to judge.
+
+    Raised rather than substituting placeholder content: a judge handed
+    "[Could not fetch ...]" scores the error message as if it were the work, and
+    the run reports a verdict on an artifact that was never read. The loader is
+    the same trust boundary the parsers are -- neither may invent its input.
+    """
+
+
 def load_artifact(raw: str) -> dict:
     """Load a single artifact from a file path, inline text, or URL.
 
@@ -15,6 +25,8 @@ def load_artifact(raw: str) -> dict:
       - id: display name (filename, URL host, or auto-generated)
       - content: full text of the artifact
       - content_hash: sha256 hexdigest[:16] for caching
+
+    Raises ArtifactLoadError when a URL cannot be fetched.
     """
     if raw.startswith("inline:"):
         content = raw[7:]
@@ -26,8 +38,9 @@ def load_artifact(raw: str) -> dict:
             parsed = urlparse(raw)
             aid = Path(parsed.path).name or parsed.netloc
         except Exception as e:
-            content = f"[Could not fetch {raw}: {e}]"
-            aid = raw
+            # Fail loudly. A fetch failure means we have no artifact -- scoring a
+            # placeholder would report a verdict on something never read.
+            raise ArtifactLoadError(f"could not fetch {raw}: {e}") from e
     else:
         path = Path(raw)
         if path.exists():

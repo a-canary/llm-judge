@@ -24,7 +24,7 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 from references import elo as _elo
-from references.artifacts import load_artifacts
+from references.artifacts import ArtifactLoadError, load_artifacts
 from references.caller import call_claude
 from references.criteria import DEFAULT_CRITERIA, validate_criteria
 from references.providers import resolve_api_url
@@ -300,8 +300,12 @@ Examples:
     except ValueError as e:
         sys.exit(f"error: {e}")
 
-    # Load artifacts
-    artifacts = load_artifacts(args.artifacts)
+    # Load artifacts. An unloadable artifact aborts the run as a message rather
+    # than a traceback -- and never as a placeholder the judge would then score.
+    try:
+        artifacts = load_artifacts(args.artifacts)
+    except ArtifactLoadError as e:
+        sys.exit(f"error: {e}")
     opts = JudgeOpts(model=args.model, effort=args.effort, provider=args.provider, output=args.output)
 
     # Dispatch

@@ -121,6 +121,7 @@ docs/                  # Architecture + CLI reference
 - Scratchpad blocks are matched by DEPTH: a nested block collapses into its parent instead of closing it early and leaking the parent's tail (verdict included) into the output
 - Only BALANCED blocks are stripped: an unclosed tag is a mention inside a payload (`"verdict": "no <think> needed"`) and never consumes a later block's close
 - Unparseable review output degrades to raw text (`parsed: False`), never to fabricated scores — including JSON that parses but lacks the fields the caller renders
+- An artifact that cannot be loaded raises `ArtifactLoadError` and aborts the run — never a placeholder body the judge would then score. The loader is the same trust boundary the parsers are: neither may invent its input, and a verdict on `[Could not fetch ...]` is a verdict on an artifact never read
 - `--provider` that is neither `cli` nor a URL must raise, never resolve to an empty base URL — validated in `main()` before any artifact loads or API call, surfaced as a message not a traceback
 - `--elo-rank` / `--elo-class` must be placed AFTER artifact paths (argparse nargs='*' greedy)
 - Pipeliner module test suite must run without live LLM (mocked spawn)

@@ -28,7 +28,7 @@ llm-judge/
 
 | Module | Responsibility |
 |--------|---------------|
-| `artifacts.py` | Load artifacts from file paths, inline:`TEXT`, or URLs; return normalized dict with id, content, content_hash
+| `artifacts.py` | Load artifacts from file paths, inline:`TEXT`, or URLs; return normalized dict with id, content, content_hash. An unfetchable URL raises `ArtifactLoadError` rather than substituting a placeholder body — the loader is the same trust boundary as the parsers, and a judge handed `[Could not fetch ...]` would score the error message as if it were the work
 | `caller.py` | Invoke LLM via `claude` CLI binary or OpenAI-compatible HTTP POST; returns raw text response
 | `criteria.py` | Default 5-dimension criteria (Correctness 30%, Completeness 25%, Clarity 20%, Maintainability 15%, EdgeCases 10%) + `validate_criteria()`
 | `parsers.py` | Parse raw LLM output into structured dicts. The gate's decision is made in ONE place (`_gate_passed`) for both the JSON and regex paths — a structured `verdict` is still a verdict, so the hedge and fail-closed rules cannot hold on one path and not the other. `strip_thinking()` runs first in every parser — a verdict must never be read out of a reasoning model's scratchpad. `pairwise`/`gate` fall back to regex (the gate's fallback fails closed); `review` degrades to raw text (`parsed: False`) rather than inventing scores

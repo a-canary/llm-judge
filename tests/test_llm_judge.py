@@ -10,7 +10,8 @@ import pytest
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-from references.artifacts import load_artifact
+from references import artifacts as artifacts_mod
+from references.artifacts import ArtifactLoadError, load_artifact
 from references.criteria import validate_criteria
 from references.elo import (
     FIFOCache,
@@ -181,6 +182,22 @@ def test_validate_criteria_sum_must_be_1():
 # load_artifact
 # ---------------------------------------------------------------------------
 
+class _FakeResponse:
+    """Minimal stand-in for a urlopen context manager, so URL tests stay offline."""
+
+    def __init__(self, body: bytes):
+        self._body = body
+
+    def read(self):
+        return self._body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
 def test_load_artifact_inline():
     a = load_artifact("inline:Hello world")
     assert a["id"].startswith("artifact_")
@@ -196,9 +213,26 @@ def test_load_artifact_path(tmp_path):
     assert a["content"] == "file content"
 
 
-def test_load_artifact_url():
-    a = load_artifact("https://example.com/")
-    assert "example.com" in a["id"] or a["id"] == "example.com"
+def test_load_artifact_url(monkeypatch):
+    """A fetched URL is named for its path, and no live egress is required."""
+    monkeypatch.setattr(artifacts_mod.urllib.request, "urlopen",
+                        lambda *a, **k: _FakeResponse(b"remote body"))
+    a = load_artifact("https://example.com/memo.md")
+    assert a["id"] == "memo.md"
+    assert a["content"] == "remote body"
+
+
+def test_load_artifact_url_failure_raises(monkeypatch):
+    """An unfetchable URL raises rather than handing the judge a placeholder.
+
+    The loader is a trust boundary like the parsers: scoring
+    "[Could not fetch ...]" would report a verdict on an artifact never read.
+    """
+    def _boom(*a, **k):
+        raise OSError("network down")
+    monkeypatch.setattr(artifacts_mod.urllib.request, "urlopen", _boom)
+    with pytest.raises(ArtifactLoadError):
+        load_artifact("https://example.com/gone.md")
 
 
 def test_load_artifact_content_hash_stable():
