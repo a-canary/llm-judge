@@ -17,17 +17,18 @@ pip install -e .
 
 Two test directories, by language:
 
-- `test/` — Node.js smoke fixtures (`test/fixtures/*.md`) consumed by the CLI smoke scripts in `package.json` (`npm test`, `npm run test:elo`, `npm run test:gate`). Not a unit-test tree.
+- `test/` — shared markdown fixtures (`test/fixtures/*.md`) consumed by the live-LLM demo scripts in `package.json` (`npm run demo:review`, `demo:elo`, `demo:gate`). Not a unit-test tree.
 - `tests/` — pytest unit tests for the Python library code (`scripts/run_judge.py`, `references/elo.py`). Discovered by pytest from its default naming convention.
 
 ```bash
-# Node.js CLI smoke (requires LLM API key)
-npm test
-npm run test:elo
-npm run test:gate
-
-# Python unit tests (no live LLM calls)
+# Unit tests — no live LLM calls (this is what CI runs)
+npm test          # alias for the line below
 pytest
+
+# Live-LLM demos against test/fixtures/ (costs real API calls)
+npm run demo:review
+npm run demo:elo
+npm run demo:gate
 ```
 
 ## File an Issue

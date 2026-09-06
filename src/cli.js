@@ -14,9 +14,8 @@ const { spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 
-const SCRIPT_DIR = path.dirname(__dirname);   // e.g. /path/to/llm-judge/src
-const REPO_ROOT = path.join(SCRIPT_DIR, '..');
-const PY_SCRIPT = path.join(SCRIPT_DIR, 'scripts', 'run_judge.py');
+const REPO_ROOT = path.dirname(__dirname);   // __dirname is <repo>/src
+const PY_SCRIPT = path.join(REPO_ROOT, 'scripts', 'run_judge.py');
 
 function findPython() {
   // Check for a local venv first
@@ -35,9 +34,11 @@ if (!fs.existsSync(PY_SCRIPT)) {
 }
 
 const python = findPython();
+// No cwd override: artifact paths on the command line are relative to the
+// user's shell, not the install directory. Overriding cwd made `llm-judge
+// ./notes.md` silently judge the literal string "./notes.md".
 const child = spawn(python, [PY_SCRIPT, ...argv], {
   stdio: 'inherit',
-  cwd: REPO_ROOT,
   env: { ...process.env },
 });
 child.on('exit', code => process.exit(code));

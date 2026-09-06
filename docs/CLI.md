@@ -55,8 +55,8 @@ Output: Markdown table with final Elo rating and match count per artifact, plus 
 | `--effort LEVEL` | Claude effort (`low`, `medium`, `high`) | `high` |
 | `--criteria FILE` | Path to criteria JSON file | built-in generic |
 | `--criteria-text JSON` | Inline criteria as JSON string | built-in generic |
-| `--elo-rank K` | (elo) Sorted top-K: R3 competes ranks 1..K+2, eliminates rest | — |
-| `--elo-class K` | (elo) Pivot top-K: competes ranks K-2..K+2 — returns top K unsorted. Best for EA selection when you only need to eliminate the bottom N-K | — |
+| `--elo-rank K` | (elo) Sorted top-K: R3 re-races ranks 1..K+2; artifacts outside the band bye and keep their Elo | — |
+| `--elo-class K` | (elo) Pivot top-K: competes ranks K-2..K+2 — returns top K by Elo. Best for EA selection when you only need to eliminate the bottom N-K | — |
 | `--rounds N` | (elo) Number of Swiss rounds | `3` |
 | `--output FILE` | Write output to file | stdout |
 
@@ -115,7 +115,7 @@ llm-judge elo \
 
 ## Common Pitfalls
 
-- **`--elo-rank`/`--elo-class` ordering:** Must come AFTER artifact paths. The argparse `nargs='*'` is greedy — it consumes all positional-like arguments before flags are parsed.
+- **`--elo-rank`/`--elo-class` ordering:** Must come AFTER artifact paths. The argparse `nargs='+'` is greedy — it consumes all positional-like arguments before flags are parsed.
   - Correct: `llm-judge elo a.md b.md --prompt "?" --elo-rank 2`
   - Wrong: `llm-judge elo --elo-rank 2 a.md b.md --prompt "?"`
 
