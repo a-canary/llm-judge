@@ -63,6 +63,25 @@ def _save_cache(data: dict) -> None:
     CACHE_PATH.write_text(json.dumps(data, indent=2))
 
 
+def _deorient(result: dict, a_id: str, b_id: str) -> dict:
+    """Convert a positional verdict into an id-keyed one for storage."""
+    winner = result.get("winner")
+    entry = dict(result)
+    entry["winner_id"] = a_id if winner == "A" else b_id if winner == "B" else None
+    return entry
+
+
+def _orient(entry: dict, a_id: str, b_id: str) -> dict:
+    """Convert a stored id-keyed verdict back into the caller's A/B positions."""
+    wid = entry["winner_id"]
+    out = dict(entry)
+    out["winner"] = "A" if wid == a_id else "B" if wid == b_id else "draw"
+    if wid == b_id:
+        # Scores are positional too — swap them to match the flipped orientation.
+        out["a_score"], out["b_score"] = entry.get("b_score"), entry.get("a_score")
+    return out
+
+
 class FIFOCache:
     """
     Simple FIFO cache keyed by sha256(task+dims+ids+hashes).
@@ -86,18 +105,30 @@ class FIFOCache:
     def get(self, task: str, dims_hash: str,
             a_id: str, a_hash: str,
             b_id: str, b_hash: str) -> Optional[dict]:
+        """Return a cached verdict re-oriented to the caller's (a_id, b_id) order.
+
+        The key is order-insensitive, so a hit may have been stored with the
+        pair the other way round. Entries record the winner by artifact id
+        ("winner_id"); positions are recomputed per lookup. Entries without
+        "winner_id" predate that fix and are dropped rather than trusted —
+        their positional "winner" cannot be re-oriented.
+        """
         key = self._make_key(task, dims_hash, a_id, a_hash, b_id, b_hash)
-        if key in self._data:
-            self._data.move_to_end(key)
-            return self._data[key]
-        return None
+        entry = self._data.get(key)
+        if entry is None:
+            return None
+        if "winner_id" not in entry:
+            del self._data[key]
+            return None
+        self._data.move_to_end(key)
+        return _orient(entry, a_id, b_id)
 
     def set(self, task: str, dims_hash: str,
             a_id: str, a_hash: str,
             b_id: str, b_hash: str,
             result: dict) -> None:
         key = self._make_key(task, dims_hash, a_id, a_hash, b_id, b_hash)
-        self._data[key] = result
+        self._data[key] = _deorient(result, a_id, b_id)
         self._data.move_to_end(key)
         if len(self._data) > self._max:
             self._data.popitem(last=False)   # evict oldest

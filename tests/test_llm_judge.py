@@ -175,7 +175,7 @@ def test_fifo_cache_set_and_get():
     try:
         key = ("task", "dims", "a1", "h1", "b1", "h2")
         cache.set(*key, {"result": "ok"})
-        assert cache.get(*key) == {"result": "ok"}
+        assert cache.get(*key)["result"] == "ok"
     finally:
         if path.exists():
             path.unlink()
@@ -195,11 +195,49 @@ def test_fifo_cache_eviction():
 
 
 def test_fifo_cache_symmetry():
+    """(x,y) and (y,x) hit the same entry — the pair order must not miss."""
     cache, path = _fresh_cache(128)
     try:
-        cache.set("task", "dims", "A", "aaa", "B", "bbb", {"winner": "A"})
-        hit = cache.get("task", "dims", "B", "bbb", "A", "aaa")
-        assert hit is not None and hit["winner"] == "A"
+        cache.set("task", "dims", "x", "aaa", "y", "bbb", {"winner": "A"})
+        assert cache.get("task", "dims", "y", "bbb", "x", "aaa") is not None
+    finally:
+        if path.exists():
+            path.unlink()
+
+
+def test_fifo_cache_reorients_winner_on_reversed_lookup():
+    """The key is order-insensitive but "winner" is positional, so a reversed
+    hit must be re-oriented. Regression: it used to return the stored letter
+    verbatim, silently inverting the verdict."""
+    cache, path = _fresh_cache(128)
+    try:
+        # x beat y (x was in position A when judged).
+        cache.set("task", "dims", "x", "aaa", "y", "bbb",
+                  {"a_score": 5.0, "b_score": 1.0, "winner": "A", "reason": "x won"})
+
+        same = cache.get("task", "dims", "x", "aaa", "y", "bbb")
+        assert same["winner"] == "A", same          # x still in position A
+        assert same["a_score"] == 5.0, same
+
+        flipped = cache.get("task", "dims", "y", "bbb", "x", "aaa")
+        assert flipped["winner"] == "B", flipped    # x is now position B
+        assert flipped["a_score"] == 1.0, flipped   # scores follow the flip
+        assert flipped["b_score"] == 5.0, flipped
+    finally:
+        if path.exists():
+            path.unlink()
+
+
+def test_fifo_cache_drops_prefix_entries_without_winner_id():
+    """Entries written before the id-keyed fix carry a positional "winner"
+    that cannot be re-oriented — they must be dropped, not trusted, and must
+    not crash the caller."""
+    cache, path = _fresh_cache(128)
+    try:
+        key = cache._make_key("task", "dims", "x", "aaa", "y", "bbb")
+        cache._data[key] = {"a_score": 5.0, "b_score": 1.0, "winner": "A"}
+        assert cache.get("task", "dims", "x", "aaa", "y", "bbb") is None
+        assert key not in cache._data
     finally:
         if path.exists():
             path.unlink()
@@ -333,17 +371,21 @@ def test_rank_swiss_elo_no_repeat_pairings():
 
 def test_mode_elo_compare_fn_honours_judge_verdict():
     """mode_elo's compare_fn must pass the judge's winner through to the
-    tournament. Regression: it used to emit a_wins/b_wins/draw and drop
-    'winner', so rank_swiss_elo defaulted every match to an A win."""
+    tournament. Regression: it emitted a_wins/b_wins/draw and dropped
+    "winner", so rank_swiss_elo defaulted every match to an A win.
+
+    The judge here always picks the artifact in position B, so the buggy
+    default ("A") produces the opposite ranking — a mock that picked a fixed
+    artifact would pass either way, since Swiss pairing chooses the order.
+    """
     import run_judge
 
-    # The prompt's "A"/"B" are positions, not artifact ids, and Swiss pairing
-    # may order the pair either way — so answer based on where "bbb" landed.
+    seen_positions = []
+
     def fake_call(prompt, *a, **k):
-        a_pos = prompt.index("aaa")
-        b_pos = prompt.index("bbb")
-        winner = "B" if b_pos > a_pos else "A"
-        return '{"a_score": 1.0, "b_score": 5.0, "winner": "%s", "reason": "b better"}' % winner
+        # Record which artifact landed in each position, then always pick B.
+        seen_positions.append((prompt.index("aaa"), prompt.index("bbb")))
+        return '{"a_score": 1.0, "b_score": 5.0, "winner": "B", "reason": "B won"}'
 
     orig_call = run_judge.call_claude
     orig_cache = run_judge._elo.FIFOCache
@@ -363,8 +405,11 @@ def test_mode_elo_compare_fn_honours_judge_verdict():
         run_judge.call_claude = orig_call
         run_judge._elo.FIFOCache = orig_cache
 
-    # B won every match, so B must outrank A.
-    assert "| 1    | b" in out, out
+    assert seen_positions, "judge was never called"
+    a_pos, b_pos = seen_positions[0]
+    # Whichever artifact Swiss pairing put in position B is the one that won.
+    winner_id = "b" if b_pos > a_pos else "a"
+    assert f"| 1    | {winner_id}" in out, (winner_id, out)
 
 
 def test_rank_swiss_elo_rejects_result_without_winner():
