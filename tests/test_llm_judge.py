@@ -4,6 +4,8 @@ import json
 import sys
 import os
 
+import pytest
+
 # Enable package-style imports from project root
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCRIPTS = os.path.join(ROOT, "scripts")
@@ -17,6 +19,18 @@ from run_judge import (
     validate_criteria,
     load_artifact,
 )
+
+
+@pytest.fixture(autouse=True)
+def _isolate_cache(tmp_path, monkeypatch):
+    """Point the module-level cache file at tmp_path for every test.
+
+    FIFOCache() reads CACHE_PATH on construction and writes it on save, so
+    without this the suite reads and rewrites the operator's real
+    ~/.cache/llm-judge/fifo_cache.json.
+    """
+    from references import elo as em
+    monkeypatch.setattr(em, "CACHE_PATH", tmp_path / "fifo_cache.json")
 
 
 # ---------------------------------------------------------------------------
@@ -151,58 +165,110 @@ def test_load_artifact_content_hash_stable():
 # ---------------------------------------------------------------------------
 
 def _fresh_cache(max_size=128):
-    """Create a FIFOCache with an isolated temp backing file."""
-    from references import elo as em
-    old = em.CACHE_PATH
-    path = old.parent / f"_test_cache_{os.getpid()}_{id(object())}.json"
-    em.CACHE_PATH = path
-    cache = FIFOCache(max_size=max_size)
-    em.CACHE_PATH = old
-    return cache, path
+    """Create a FIFOCache; _isolate_cache already redirects CACHE_PATH to tmp_path."""
+    return FIFOCache(max_size=max_size)
 
 
 def test_fifo_cache_miss_returns_none():
-    cache, path = _fresh_cache(128)
-    try:
-        assert cache.get("task", "dims", "a1", "h1", "b1", "h2") is None
-    finally:
-        if path.exists():
-            path.unlink()
+    cache = _fresh_cache(128)
+    assert cache.get("task", "dims", "a1", "h1", "b1", "h2") is None
 
 
 def test_fifo_cache_set_and_get():
-    cache, path = _fresh_cache(128)
-    try:
-        key = ("task", "dims", "a1", "h1", "b1", "h2")
-        cache.set(*key, {"result": "ok"})
-        assert cache.get(*key) == {"result": "ok"}
-    finally:
-        if path.exists():
-            path.unlink()
+    cache = _fresh_cache(128)
+    key = ("task", "dims", "a1", "h1", "b1", "h2")
+    cache.set(*key, {"result": "ok"})
+    assert cache.get(*key)["result"] == "ok"
 
 
 def test_fifo_cache_eviction():
-    cache, path = _fresh_cache(2)
-    try:
-        for i in range(3):
-            cache.set("t", "d", f"a{i}", "h", f"b{i}", "h", {"v": i})
-        assert cache.get("t", "d", "a0", "h", "b0", "h") is None
-        assert cache.get("t", "d", "a1", "h", "b1", "h") is not None
-        assert cache.get("t", "d", "a2", "h", "b2", "h") is not None
-    finally:
-        if path.exists():
-            path.unlink()
+    cache = _fresh_cache(2)
+    for i in range(3):
+        cache.set("t", "d", f"a{i}", "h", f"b{i}", "h", {"v": i})
+    assert cache.get("t", "d", "a0", "h", "b0", "h") is None
+    assert cache.get("t", "d", "a1", "h", "b1", "h") is not None
+    assert cache.get("t", "d", "a2", "h", "b2", "h") is not None
 
 
 def test_fifo_cache_symmetry():
-    cache, path = _fresh_cache(128)
+    """(x,y) and (y,x) hit the same entry — the pair order must not miss."""
+    cache = _fresh_cache(128)
+    cache.set("task", "dims", "x", "aaa", "y", "bbb", {"winner": "A"})
+    assert cache.get("task", "dims", "y", "bbb", "x", "aaa") is not None
+
+
+def test_fifo_cache_reorients_winner_on_reversed_lookup():
+    """The key is order-insensitive but "winner" is positional, so a reversed
+    hit must be re-oriented. Regression: it used to return the stored letter
+    verbatim, silently inverting the verdict."""
+    cache = _fresh_cache(128)
+    # x beat y (x was in position A when judged).
+    cache.set("task", "dims", "x", "aaa", "y", "bbb",
+              {"a_score": 5.0, "b_score": 1.0, "winner": "A", "reason": "x won"})
+
+    same = cache.get("task", "dims", "x", "aaa", "y", "bbb")
+    assert same["winner"] == "A", same          # x still in position A
+    assert same["a_score"] == 5.0, same
+
+    flipped = cache.get("task", "dims", "y", "bbb", "x", "aaa")
+    assert flipped["winner"] == "B", flipped    # x is now position B
+    assert flipped["a_score"] == 1.0, flipped   # scores follow the flip
+    assert flipped["b_score"] == 5.0, flipped
+
+
+def test_fifo_cache_reorients_draw_scores_on_reversed_lookup():
+    """A draw has no winner to key the swap off, but scores are still
+    positional. Regression: the swap keyed off the winner, so reversed draws
+    came back with the two artifacts' scores attributed to each other."""
+    cache = _fresh_cache(128)
+    # x scored 4.0 in position A, y scored 2.0 in position B — judged a draw.
+    cache.set("task", "dims", "x", "aaa", "y", "bbb",
+              {"a_score": 4.0, "b_score": 2.0, "winner": "draw", "reason": "tie"})
+
+    flipped = cache.get("task", "dims", "y", "bbb", "x", "aaa")
+    assert flipped["winner"] == "draw", flipped
+    assert flipped["a_score"] == 2.0, flipped   # y is now position A
+    assert flipped["b_score"] == 4.0, flipped   # x is now position B
+
+
+def test_fifo_cache_equal_ids_do_not_swap_scores():
+    """With a_id == b_id both orientation checks match. Regression: the swap
+    branch fired anyway and inverted the scores against themselves."""
+    cache = _fresh_cache(128)
+    cache.set("task", "dims", "z", "aaa", "z", "aaa",
+              {"a_score": 5.0, "b_score": 1.0, "winner": "A", "reason": "z"})
+
+    got = cache.get("task", "dims", "z", "aaa", "z", "aaa")
+    assert got["winner"] == "A", got
+    assert got["a_score"] == 5.0, got
+    assert got["b_score"] == 1.0, got
+
+
+def test_fifo_cache_rejects_entry_whose_winner_matches_neither_id():
+    """A winner_id belonging to neither artifact is corruption, not a draw."""
+    cache = _fresh_cache(128)
+    cache.set("task", "dims", "x", "aaa", "y", "bbb",
+              {"a_score": 5.0, "b_score": 1.0, "winner": "A", "reason": "x"})
+    cache._data[cache._make_key("task", "dims", "x", "aaa", "y", "bbb")]["winner_id"] = "ghost"
     try:
-        cache.set("task", "dims", "A", "aaa", "B", "bbb", {"winner": "A"})
-        hit = cache.get("task", "dims", "B", "bbb", "A", "aaa")
-        assert hit is not None and hit["winner"] == "A"
-    finally:
-        if path.exists():
-            path.unlink()
+        cache.get("task", "dims", "x", "aaa", "y", "bbb")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("expected ValueError for unknown winner_id")
+
+
+def test_fifo_cache_drops_prefix_entries_without_winner_id():
+    """Entries written before the id-keyed fix carry a positional "winner"
+    that cannot be re-oriented — they must be dropped, not trusted, and must
+    not crash the caller."""
+    cache = _fresh_cache(128)
+    key = cache._make_key("task", "dims", "x", "aaa", "y", "bbb")
+    for stale in ({"a_score": 5.0, "b_score": 1.0, "winner": "A"},
+                  {"a_score": 5.0, "b_score": 1.0, "winner": "A", "winner_id": "x"}):
+        cache._data[key] = stale
+        assert cache.get("task", "dims", "x", "aaa", "y", "bbb") is None, stale
+        assert key not in cache._data, stale
 
 
 # ---------------------------------------------------------------------------
@@ -326,3 +392,81 @@ def test_rank_swiss_elo_no_repeat_pairings():
             pair_key = frozenset({pair["a"], pair["b"]})
             assert pair_key not in seen_pairs, f"Repeat pairing: {pair}"
             seen_pairs.add(pair_key)
+
+# ---------------------------------------------------------------------------
+# Seam: parse_pairwise_result output -> rank_swiss_elo compare_fn contract
+# ---------------------------------------------------------------------------
+
+def test_mode_elo_compare_fn_honours_judge_verdict():
+    """mode_elo's compare_fn must pass the judge's winner through to the
+    tournament. Regression: it emitted a_wins/b_wins/draw and dropped
+    "winner", so rank_swiss_elo defaulted every match to an A win.
+
+    The judge here always picks the artifact in position B, so the buggy
+    default ("A") produces the opposite ranking — a mock that picked a fixed
+    artifact would pass either way, since Swiss pairing chooses the order.
+    """
+    import run_judge
+
+    seen_positions = []
+
+    def fake_call(prompt, *a, **k):
+        # Record which artifact landed in each position, then always pick B.
+        seen_positions.append((prompt.index("aaa"), prompt.index("bbb")))
+        return '{"a_score": 1.0, "b_score": 5.0, "winner": "B", "reason": "B won"}'
+
+    orig_call = run_judge.call_claude
+    orig_cache = run_judge._elo.FIFOCache
+    run_judge.call_claude = fake_call
+    run_judge._elo.FIFOCache = lambda *a, **k: _NullCache()
+    try:
+        artifacts = [
+            {"id": "a", "content_hash": "h1", "content": "aaa"},
+            {"id": "b", "content_hash": "h2", "content": "bbb"},
+        ]
+        criteria = {"dimensions": [{"name": "quality", "weight": 1.0, "desc": "d"}]}
+        out = run_judge.mode_elo(
+            artifacts, criteria, "task", run_judge.JudgeOpts(),
+            elo_mode="all", elo_K=0, n_rounds=1,
+        )
+    finally:
+        run_judge.call_claude = orig_call
+        run_judge._elo.FIFOCache = orig_cache
+
+    assert seen_positions, "judge was never called"
+    a_pos, b_pos = seen_positions[0]
+    # Whichever artifact Swiss pairing put in position B is the one that won.
+    winner_id = "b" if b_pos > a_pos else "a"
+    assert f"| 1    | {winner_id}" in out, (winner_id, out)
+
+
+def test_rank_swiss_elo_rejects_result_without_winner():
+    """A compare_fn that omits 'winner' must fail loudly, not score A wins."""
+    cache = FIFOCache()
+
+    def compare_fn(task, dims_hash, a, b, cache):
+        return {"a_score": 3.0, "b_score": 4.0, "reason": "no winner key"}
+
+    artifacts = [
+        {"id": "a", "content_hash": "h1", "content": "aaa"},
+        {"id": "b", "content_hash": "h2", "content": "bbb"},
+    ]
+    try:
+        rank_swiss_elo(artifacts, "task", "hash", cache, compare_fn, n_rounds=1)
+    except ValueError as e:
+        assert "winner" in str(e)
+    else:
+        raise AssertionError("expected ValueError for missing 'winner'")
+
+
+class _NullCache:
+    """In-memory stand-in so the seam test never touches ~/.cache/llm-judge/."""
+
+    def get(self, *a, **k):
+        return None
+
+    def set(self, *a, **k):
+        return None
+
+    def stats(self):
+        return {"cached": 0, "max": 0}

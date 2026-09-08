@@ -39,7 +39,7 @@ Build and maintain a CLI tool that evaluates artifacts with LLMs via three modes
 ## Architecture
 
 ### Language
-- Canonical: Python 3.9+ (scripts/run_judge.py + references/elo.py)
+- Canonical: Python 3.9+ (scripts/run_judge.py dispatch + references/ modules)
 - Wrapper: Node.js 18+ (src/cli.js) — thin passthrough only, no logic
 - Pipeliner integration: TypeScript (pipeliner/llm_judge_module.ts)
 
@@ -50,8 +50,14 @@ Build and maintain a CLI tool that evaluates artifacts with LLMs via three modes
 
 ### File layout
 ```
-scripts/run_judge.py   # CLI entry: review, gate, elo dispatch + all prompt builders
+scripts/run_judge.py   # CLI entry: arg parsing + review/gate/elo dispatch
 references/elo.py      # Pure engine: FIFOCache, ArtifactElo, rank_swiss_elo
+references/prompts.py  # Prompt builders (pairwise, critique, gate)
+references/parsers.py  # LLM-response parsing (JSON + regex fallback)
+references/artifacts.py# Artifact loading: file / URL / inline text
+references/providers.py# Base-URL resolution + credential lookup
+references/caller.py   # call_claude: CLI spawn or OpenAI-compat HTTP
+references/criteria.py # DEFAULT_CRITERIA + weight validation
 references/criteria_template.md
 src/cli.js             # Node thin wrapper
 test/fixtures/         # Static essay fixtures (no live LLM calls)
@@ -104,6 +110,7 @@ docs/                  # Architecture + CLI reference
 - parse_pairwise_result must fall back to regex when JSON parse fails (no hard crash)
 - `--elo-rank` / `--elo-class` must be placed AFTER artifact paths (argparse nargs='*' greedy)
 - Pipeliner module test suite must run without live LLM (mocked spawn)
+- `compare_fn` must return the parser contract verbatim (`a_score`, `b_score`, `winner`, `reason`); `rank_swiss_elo` hard-errors on a missing `winner` rather than defaulting (a default silently scores every match as an A win)
 
 ---
 
