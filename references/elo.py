@@ -273,7 +273,13 @@ def rank_swiss_elo(
             result = compare_fn(task, dims_hash, a, b, cache)
             a_score = float(result.get("a_score", 3.0))
             b_score = float(result.get("b_score", 3.0))
-            winner = result.get("winner", "A")
+            if "winner" not in result:
+                # Defaulting here would silently score every match as an A win.
+                raise ValueError(
+                    f"compare_fn result missing 'winner' for {a.id} vs {b.id}; "
+                    f"got keys {sorted(result)}"
+                )
+            winner = result["winner"]
 
             # Map external "A"/"B"/"draw" labels into each artifact's local "me"/"opp"/"draw".
             a_winner, b_winner = _per_perspective_winners(winner)

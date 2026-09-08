@@ -147,18 +147,11 @@ def mode_elo(artifacts: list[dict], criteria: dict, task: str, opts: JudgeOpts,
             task,
         )
         raw = call_claude(prompt, model=opts.model, effort=opts.effort, provider=opts.provider)
+        # parse_pairwise_result already returns the compare_fn contract
+        # ({a_score, b_score, winner, reason}) — pass it through unchanged.
         result = parse_pairwise_result(raw)
-        winner_key = result["winner"]
-        normalized = {
-            "a_wins": 1.0 if winner_key == "A" else 0.0,
-            "b_wins": 1.0 if winner_key == "B" else 0.0,
-            "draw": 1.0 if winner_key not in ("A", "B") else 0.0,
-            "a_score": result["a_score"],
-            "b_score": result["b_score"],
-            "reason": result["reason"],
-        }
-        cache.set(task, dims_hash, a_id, a_hash, b_id, b_hash, normalized)
-        return normalized
+        cache.set(task, dims_hash, a_id, a_hash, b_id, b_hash, result)
+        return result
 
     result = _elo.rank_swiss_elo(
         artifacts=artifacts,

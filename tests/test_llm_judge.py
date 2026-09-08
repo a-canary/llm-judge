@@ -326,3 +326,74 @@ def test_rank_swiss_elo_no_repeat_pairings():
             pair_key = frozenset({pair["a"], pair["b"]})
             assert pair_key not in seen_pairs, f"Repeat pairing: {pair}"
             seen_pairs.add(pair_key)
+
+# ---------------------------------------------------------------------------
+# Seam: parse_pairwise_result output -> rank_swiss_elo compare_fn contract
+# ---------------------------------------------------------------------------
+
+def test_mode_elo_compare_fn_honours_judge_verdict():
+    """mode_elo's compare_fn must pass the judge's winner through to the
+    tournament. Regression: it used to emit a_wins/b_wins/draw and drop
+    'winner', so rank_swiss_elo defaulted every match to an A win."""
+    import run_judge
+
+    # The prompt's "A"/"B" are positions, not artifact ids, and Swiss pairing
+    # may order the pair either way — so answer based on where "bbb" landed.
+    def fake_call(prompt, *a, **k):
+        a_pos = prompt.index("aaa")
+        b_pos = prompt.index("bbb")
+        winner = "B" if b_pos > a_pos else "A"
+        return '{"a_score": 1.0, "b_score": 5.0, "winner": "%s", "reason": "b better"}' % winner
+
+    orig_call = run_judge.call_claude
+    orig_cache = run_judge._elo.FIFOCache
+    run_judge.call_claude = fake_call
+    run_judge._elo.FIFOCache = lambda *a, **k: _NullCache()
+    try:
+        artifacts = [
+            {"id": "a", "content_hash": "h1", "content": "aaa"},
+            {"id": "b", "content_hash": "h2", "content": "bbb"},
+        ]
+        criteria = {"dimensions": [{"name": "quality", "weight": 1.0, "desc": "d"}]}
+        out = run_judge.mode_elo(
+            artifacts, criteria, "task", run_judge.JudgeOpts(),
+            elo_mode="all", elo_K=0, n_rounds=1,
+        )
+    finally:
+        run_judge.call_claude = orig_call
+        run_judge._elo.FIFOCache = orig_cache
+
+    # B won every match, so B must outrank A.
+    assert "| 1    | b" in out, out
+
+
+def test_rank_swiss_elo_rejects_result_without_winner():
+    """A compare_fn that omits 'winner' must fail loudly, not score A wins."""
+    cache = FIFOCache()
+
+    def compare_fn(task, dims_hash, a, b, cache):
+        return {"a_score": 3.0, "b_score": 4.0, "reason": "no winner key"}
+
+    artifacts = [
+        {"id": "a", "content_hash": "h1", "content": "aaa"},
+        {"id": "b", "content_hash": "h2", "content": "bbb"},
+    ]
+    try:
+        rank_swiss_elo(artifacts, "task", "hash", cache, compare_fn, n_rounds=1)
+    except ValueError as e:
+        assert "winner" in str(e)
+    else:
+        raise AssertionError("expected ValueError for missing 'winner'")
+
+
+class _NullCache:
+    """In-memory stand-in so the seam test never touches ~/.cache/llm-judge/."""
+
+    def get(self, *a, **k):
+        return None
+
+    def set(self, *a, **k):
+        return None
+
+    def stats(self):
+        return {"cached": 0, "max": 0}
