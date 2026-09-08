@@ -4,6 +4,8 @@ import json
 import sys
 import os
 
+import pytest
+
 # Enable package-style imports from project root
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCRIPTS = os.path.join(ROOT, "scripts")
@@ -17,6 +19,18 @@ from run_judge import (
     validate_criteria,
     load_artifact,
 )
+
+
+@pytest.fixture(autouse=True)
+def _isolate_cache(tmp_path, monkeypatch):
+    """Point the module-level cache file at tmp_path for every test.
+
+    FIFOCache() reads CACHE_PATH on construction and writes it on save, so
+    without this the suite reads and rewrites the operator's real
+    ~/.cache/llm-judge/fifo_cache.json.
+    """
+    from references import elo as em
+    monkeypatch.setattr(em, "CACHE_PATH", tmp_path / "fifo_cache.json")
 
 
 # ---------------------------------------------------------------------------
@@ -151,96 +165,66 @@ def test_load_artifact_content_hash_stable():
 # ---------------------------------------------------------------------------
 
 def _fresh_cache(max_size=128):
-    """Create a FIFOCache with an isolated temp backing file."""
-    from references import elo as em
-    old = em.CACHE_PATH
-    path = old.parent / f"_test_cache_{os.getpid()}_{id(object())}.json"
-    em.CACHE_PATH = path
-    cache = FIFOCache(max_size=max_size)
-    em.CACHE_PATH = old
-    return cache, path
+    """Create a FIFOCache; _isolate_cache already redirects CACHE_PATH to tmp_path."""
+    return FIFOCache(max_size=max_size)
 
 
 def test_fifo_cache_miss_returns_none():
-    cache, path = _fresh_cache(128)
-    try:
-        assert cache.get("task", "dims", "a1", "h1", "b1", "h2") is None
-    finally:
-        if path.exists():
-            path.unlink()
+    cache = _fresh_cache(128)
+    assert cache.get("task", "dims", "a1", "h1", "b1", "h2") is None
 
 
 def test_fifo_cache_set_and_get():
-    cache, path = _fresh_cache(128)
-    try:
-        key = ("task", "dims", "a1", "h1", "b1", "h2")
-        cache.set(*key, {"result": "ok"})
-        assert cache.get(*key)["result"] == "ok"
-    finally:
-        if path.exists():
-            path.unlink()
+    cache = _fresh_cache(128)
+    key = ("task", "dims", "a1", "h1", "b1", "h2")
+    cache.set(*key, {"result": "ok"})
+    assert cache.get(*key)["result"] == "ok"
 
 
 def test_fifo_cache_eviction():
-    cache, path = _fresh_cache(2)
-    try:
-        for i in range(3):
-            cache.set("t", "d", f"a{i}", "h", f"b{i}", "h", {"v": i})
-        assert cache.get("t", "d", "a0", "h", "b0", "h") is None
-        assert cache.get("t", "d", "a1", "h", "b1", "h") is not None
-        assert cache.get("t", "d", "a2", "h", "b2", "h") is not None
-    finally:
-        if path.exists():
-            path.unlink()
+    cache = _fresh_cache(2)
+    for i in range(3):
+        cache.set("t", "d", f"a{i}", "h", f"b{i}", "h", {"v": i})
+    assert cache.get("t", "d", "a0", "h", "b0", "h") is None
+    assert cache.get("t", "d", "a1", "h", "b1", "h") is not None
+    assert cache.get("t", "d", "a2", "h", "b2", "h") is not None
 
 
 def test_fifo_cache_symmetry():
     """(x,y) and (y,x) hit the same entry — the pair order must not miss."""
-    cache, path = _fresh_cache(128)
-    try:
-        cache.set("task", "dims", "x", "aaa", "y", "bbb", {"winner": "A"})
-        assert cache.get("task", "dims", "y", "bbb", "x", "aaa") is not None
-    finally:
-        if path.exists():
-            path.unlink()
+    cache = _fresh_cache(128)
+    cache.set("task", "dims", "x", "aaa", "y", "bbb", {"winner": "A"})
+    assert cache.get("task", "dims", "y", "bbb", "x", "aaa") is not None
 
 
 def test_fifo_cache_reorients_winner_on_reversed_lookup():
     """The key is order-insensitive but "winner" is positional, so a reversed
     hit must be re-oriented. Regression: it used to return the stored letter
     verbatim, silently inverting the verdict."""
-    cache, path = _fresh_cache(128)
-    try:
-        # x beat y (x was in position A when judged).
-        cache.set("task", "dims", "x", "aaa", "y", "bbb",
-                  {"a_score": 5.0, "b_score": 1.0, "winner": "A", "reason": "x won"})
+    cache = _fresh_cache(128)
+    # x beat y (x was in position A when judged).
+    cache.set("task", "dims", "x", "aaa", "y", "bbb",
+              {"a_score": 5.0, "b_score": 1.0, "winner": "A", "reason": "x won"})
 
-        same = cache.get("task", "dims", "x", "aaa", "y", "bbb")
-        assert same["winner"] == "A", same          # x still in position A
-        assert same["a_score"] == 5.0, same
+    same = cache.get("task", "dims", "x", "aaa", "y", "bbb")
+    assert same["winner"] == "A", same          # x still in position A
+    assert same["a_score"] == 5.0, same
 
-        flipped = cache.get("task", "dims", "y", "bbb", "x", "aaa")
-        assert flipped["winner"] == "B", flipped    # x is now position B
-        assert flipped["a_score"] == 1.0, flipped   # scores follow the flip
-        assert flipped["b_score"] == 5.0, flipped
-    finally:
-        if path.exists():
-            path.unlink()
+    flipped = cache.get("task", "dims", "y", "bbb", "x", "aaa")
+    assert flipped["winner"] == "B", flipped    # x is now position B
+    assert flipped["a_score"] == 1.0, flipped   # scores follow the flip
+    assert flipped["b_score"] == 5.0, flipped
 
 
 def test_fifo_cache_drops_prefix_entries_without_winner_id():
     """Entries written before the id-keyed fix carry a positional "winner"
     that cannot be re-oriented — they must be dropped, not trusted, and must
     not crash the caller."""
-    cache, path = _fresh_cache(128)
-    try:
-        key = cache._make_key("task", "dims", "x", "aaa", "y", "bbb")
-        cache._data[key] = {"a_score": 5.0, "b_score": 1.0, "winner": "A"}
-        assert cache.get("task", "dims", "x", "aaa", "y", "bbb") is None
-        assert key not in cache._data
-    finally:
-        if path.exists():
-            path.unlink()
+    cache = _fresh_cache(128)
+    key = cache._make_key("task", "dims", "x", "aaa", "y", "bbb")
+    cache._data[key] = {"a_score": 5.0, "b_score": 1.0, "winner": "A"}
+    assert cache.get("task", "dims", "x", "aaa", "y", "bbb") is None
+    assert key not in cache._data
 
 
 # ---------------------------------------------------------------------------
