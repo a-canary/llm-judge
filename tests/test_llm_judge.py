@@ -216,15 +216,59 @@ def test_fifo_cache_reorients_winner_on_reversed_lookup():
     assert flipped["b_score"] == 5.0, flipped
 
 
+def test_fifo_cache_reorients_draw_scores_on_reversed_lookup():
+    """A draw has no winner to key the swap off, but scores are still
+    positional. Regression: the swap keyed off the winner, so reversed draws
+    came back with the two artifacts' scores attributed to each other."""
+    cache = _fresh_cache(128)
+    # x scored 4.0 in position A, y scored 2.0 in position B — judged a draw.
+    cache.set("task", "dims", "x", "aaa", "y", "bbb",
+              {"a_score": 4.0, "b_score": 2.0, "winner": "draw", "reason": "tie"})
+
+    flipped = cache.get("task", "dims", "y", "bbb", "x", "aaa")
+    assert flipped["winner"] == "draw", flipped
+    assert flipped["a_score"] == 2.0, flipped   # y is now position A
+    assert flipped["b_score"] == 4.0, flipped   # x is now position B
+
+
+def test_fifo_cache_equal_ids_do_not_swap_scores():
+    """With a_id == b_id both orientation checks match. Regression: the swap
+    branch fired anyway and inverted the scores against themselves."""
+    cache = _fresh_cache(128)
+    cache.set("task", "dims", "z", "aaa", "z", "aaa",
+              {"a_score": 5.0, "b_score": 1.0, "winner": "A", "reason": "z"})
+
+    got = cache.get("task", "dims", "z", "aaa", "z", "aaa")
+    assert got["winner"] == "A", got
+    assert got["a_score"] == 5.0, got
+    assert got["b_score"] == 1.0, got
+
+
+def test_fifo_cache_rejects_entry_whose_winner_matches_neither_id():
+    """A winner_id belonging to neither artifact is corruption, not a draw."""
+    cache = _fresh_cache(128)
+    cache.set("task", "dims", "x", "aaa", "y", "bbb",
+              {"a_score": 5.0, "b_score": 1.0, "winner": "A", "reason": "x"})
+    cache._data[cache._make_key("task", "dims", "x", "aaa", "y", "bbb")]["winner_id"] = "ghost"
+    try:
+        cache.get("task", "dims", "x", "aaa", "y", "bbb")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("expected ValueError for unknown winner_id")
+
+
 def test_fifo_cache_drops_prefix_entries_without_winner_id():
     """Entries written before the id-keyed fix carry a positional "winner"
     that cannot be re-oriented — they must be dropped, not trusted, and must
     not crash the caller."""
     cache = _fresh_cache(128)
     key = cache._make_key("task", "dims", "x", "aaa", "y", "bbb")
-    cache._data[key] = {"a_score": 5.0, "b_score": 1.0, "winner": "A"}
-    assert cache.get("task", "dims", "x", "aaa", "y", "bbb") is None
-    assert key not in cache._data
+    for stale in ({"a_score": 5.0, "b_score": 1.0, "winner": "A"},
+                  {"a_score": 5.0, "b_score": 1.0, "winner": "A", "winner_id": "x"}):
+        cache._data[key] = stale
+        assert cache.get("task", "dims", "x", "aaa", "y", "bbb") is None, stale
+        assert key not in cache._data, stale
 
 
 # ---------------------------------------------------------------------------
