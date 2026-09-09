@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import os
 import subprocess
-from typing import Optional
 
 
 def resolve_api_url(provider_arg: str) -> str:
