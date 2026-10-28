@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 
 def build_dimensions_text(dimensions: list[dict]) -> str:
     return "\n".join(

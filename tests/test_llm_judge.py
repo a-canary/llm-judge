@@ -13,12 +13,9 @@ sys.path.insert(0, ROOT)
 sys.path.insert(0, SCRIPTS)
 
 from references.elo import FIFOCache, rank_swiss_elo, ArtifactElo
-from run_judge import (
-    parse_pairwise_result,
-    parse_gate_result,
-    validate_criteria,
-    load_artifact,
-)
+from references.artifacts import load_artifact
+from references.criteria import validate_criteria
+from references.parsers import parse_gate_result, parse_pairwise_result
 
 
 @pytest.fixture(autouse=True)
@@ -470,3 +467,42 @@ class _NullCache:
 
     def stats(self):
         return {"cached": 0, "max": 0}
+
+
+# ---------------------------------------------------------------------------
+# Node shim path resolution
+# ---------------------------------------------------------------------------
+
+
+def test_cli_shim_prefers_repo_venv(tmp_path):
+    """src/cli.js must find <repo>/venv/bin/python3 and spawn it.
+
+    Regression: REPO_ROOT was computed one level above the repo, so the
+    documented venv discovery silently never matched and the child was
+    spawned with a cwd outside the repo.
+    """
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node not installed")
+
+    # Copy the shim into a fake repo laid out like the real one, so the test
+    # never creates a venv/ inside the working tree.
+    fake = tmp_path / "repo"
+    (fake / "src").mkdir(parents=True)
+    (fake / "scripts").mkdir()
+    shutil.copy(os.path.join(ROOT, "src", "cli.js"), fake / "src" / "cli.js")
+    (fake / "scripts" / "run_judge.py").write_text("")
+
+    venv_python = fake / "venv" / "bin" / "python3"
+    venv_python.parent.mkdir(parents=True)
+    venv_python.write_text("#!/bin/sh\necho REPO_VENV_PYTHON\n")
+    venv_python.chmod(0o755)
+
+    out = subprocess.run(
+        [node, str(fake / "src" / "cli.js")],
+        capture_output=True, text=True, timeout=30,
+    )
+    assert "REPO_VENV_PYTHON" in out.stdout, (out.stdout, out.stderr)

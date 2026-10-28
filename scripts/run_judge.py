@@ -12,7 +12,6 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -25,8 +24,8 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 from references import elo as _elo
-from references.artifacts import load_artifact, load_artifacts
-from references.caller import DEFAULT_SYSTEM, call_claude
+from references.artifacts import load_artifacts
+from references.caller import call_claude
 from references.criteria import DEFAULT_CRITERIA, validate_criteria
 from references.parsers import parse_gate_result, parse_pairwise_result
 from references.prompts import (
