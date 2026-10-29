@@ -63,6 +63,42 @@ def _save_cache(data: dict) -> None:
     CACHE_PATH.write_text(json.dumps(data, indent=2))
 
 
+def _deorient(result: dict, a_id: str, b_id: str) -> dict:
+    """Convert a positional verdict into an id-keyed one for storage.
+
+    Records which id held position A ("a_id") so a later lookup can tell
+    whether the pair came back flipped, independently of who won.
+    """
+    winner = result.get("winner")
+    entry = dict(result)
+    entry["a_id"] = a_id
+    entry["winner_id"] = a_id if winner == "A" else b_id if winner == "B" else None
+    return entry
+
+
+def _orient(entry: dict, a_id: str, b_id: str) -> dict:
+    """Convert a stored id-keyed verdict back into the caller's A/B positions.
+
+    Scores are positional, so they swap whenever the pair is flipped relative
+    to how it was stored — including draws, which have no winner to key off.
+    """
+    flipped = entry["a_id"] != a_id
+    wid = entry["winner_id"]
+    out = dict(entry)
+    if wid is None:
+        out["winner"] = "draw"
+    elif wid == a_id:
+        out["winner"] = "A"
+    elif wid == b_id:
+        out["winner"] = "B"
+    else:
+        # Winner is neither artifact — the entry is corrupt, not a draw.
+        raise ValueError(f"cached winner_id {wid!r} matches neither {a_id!r} nor {b_id!r}")
+    if flipped:
+        out["a_score"], out["b_score"] = entry.get("b_score"), entry.get("a_score")
+    return out
+
+
 class FIFOCache:
     """
     Simple FIFO cache keyed by sha256(task+dims+ids+hashes).
@@ -86,18 +122,31 @@ class FIFOCache:
     def get(self, task: str, dims_hash: str,
             a_id: str, a_hash: str,
             b_id: str, b_hash: str) -> Optional[dict]:
+        """Return a cached verdict re-oriented to the caller's (a_id, b_id) order.
+
+        The key is order-insensitive, so a hit may have been stored with the
+        pair the other way round. Entries record the winner by artifact id
+        ("winner_id") and which id held position A ("a_id"); positions and
+        scores are recomputed per lookup. Entries missing either field
+        predate that fix and are dropped rather than trusted — their
+        positional "winner" cannot be re-oriented.
+        """
         key = self._make_key(task, dims_hash, a_id, a_hash, b_id, b_hash)
-        if key in self._data:
-            self._data.move_to_end(key)
-            return self._data[key]
-        return None
+        entry = self._data.get(key)
+        if entry is None:
+            return None
+        if "winner_id" not in entry or "a_id" not in entry:
+            del self._data[key]
+            return None
+        self._data.move_to_end(key)
+        return _orient(entry, a_id, b_id)
 
     def set(self, task: str, dims_hash: str,
             a_id: str, a_hash: str,
             b_id: str, b_hash: str,
             result: dict) -> None:
         key = self._make_key(task, dims_hash, a_id, a_hash, b_id, b_hash)
-        self._data[key] = result
+        self._data[key] = _deorient(result, a_id, b_id)
         self._data.move_to_end(key)
         if len(self._data) > self._max:
             self._data.popitem(last=False)   # evict oldest
@@ -273,7 +322,13 @@ def rank_swiss_elo(
             result = compare_fn(task, dims_hash, a, b, cache)
             a_score = float(result.get("a_score", 3.0))
             b_score = float(result.get("b_score", 3.0))
-            winner = result.get("winner", "A")
+            if "winner" not in result:
+                # Defaulting here would silently score every match as an A win.
+                raise ValueError(
+                    f"compare_fn result missing 'winner' for {a.id} vs {b.id}; "
+                    f"got keys {sorted(result)}"
+                )
+            winner = result["winner"]
 
             # Map external "A"/"B"/"draw" labels into each artifact's local "me"/"opp"/"draw".
             a_winner, b_winner = _per_perspective_winners(winner)
