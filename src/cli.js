@@ -36,7 +36,6 @@ if (!fs.existsSync(PY_SCRIPT)) {
 const python = findPython();
 const child = spawn(python, [PY_SCRIPT, ...argv], {
   stdio: 'inherit',
-  cwd: REPO_ROOT,
   env: { ...process.env },
 });
 child.on('exit', code => process.exit(code));
