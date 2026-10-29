@@ -506,3 +506,36 @@ def test_cli_shim_prefers_repo_venv(tmp_path):
         capture_output=True, text=True, timeout=30,
     )
     assert "REPO_VENV_PYTHON" in out.stdout, (out.stdout, out.stderr)
+
+
+def test_cli_shim_keeps_caller_cwd(tmp_path):
+    """src/cli.js must spawn Python in the caller's cwd, not the install dir.
+
+    Regression: `cwd: REPO_ROOT` made `llm-judge ./notes.md` run from any
+    other directory resolve against the install dir, so load_artifact fell
+    through and judged the literal string "./notes.md".
+    """
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node not installed")
+
+    fake = tmp_path / "repo"
+    (fake / "src").mkdir(parents=True)
+    (fake / "scripts").mkdir()
+    shutil.copy(os.path.join(ROOT, "src", "cli.js"), fake / "src" / "cli.js")
+    (fake / "scripts" / "run_judge.py").write_text("")
+    venv_python = fake / "venv" / "bin" / "python3"
+    venv_python.parent.mkdir(parents=True)
+    venv_python.write_text("#!/bin/sh\npwd -P\n")
+    venv_python.chmod(0o755)
+
+    caller = tmp_path / "caller"
+    caller.mkdir()
+    out = subprocess.run(
+        [node, str(fake / "src" / "cli.js"), "./notes.md"],
+        capture_output=True, text=True, timeout=30, cwd=caller,
+    )
+    assert out.stdout.strip() == str(caller.resolve()), (out.stdout, out.stderr)
