@@ -3,7 +3,7 @@
  * llm-judge CLI wrapper — Node.js entry point that delegates to the Python core.
  *
  * Discovery order for the Python interpreter:
- * 1. ${SCRIPT_DIR}/../venv/bin/python3  (pip install -e . in a venv)
+ * 1. <repo>/venv/bin/python3  (pip install -e . in a venv)
  * 2. python3 in PATH
  *
  * The Python script (scripts/run_judge.py) is invoked with all args passed through.
